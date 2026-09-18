@@ -27,7 +27,7 @@ gpt-4.1-mini evaluates the observation
    ↓
 another tool if needed
    ↓
-final answer
+final answer in Spanish
 ```
 
 The script prints each tool call as `[ACTION]` and each result as `[OBSERVATION]`. It may also print concise user-visible model text as `[MODEL]`. It does not expose private chain-of-thought.
@@ -67,16 +67,41 @@ OPENAI_MODEL=gpt-4.1-mini
 
 ## Run
 
+If you do not pass a question, the script uses this default example in Spanish:
+
+```text
+¿Está Apple (AAPL) sobrevalorada en relación con el sector tecnológico?
+¿Qué implica esto para una cartera long-only?
+```
+
+Run it with:
+
 ```bash
 python react.py
 ```
 
-The question at the bottom of `react.py` is intentionally the same as in the original lab:
+You can also pass any other question as a positional parameter. Put it in quotes when it contains spaces:
+
+```bash
+python react.py "¿Está Microsoft (MSFT) sobrevalorada en relación con el sector tecnológico?"
+```
+
+Another example:
+
+```bash
+python react.py "Analiza la valoración de NVIDIA (NVDA) frente a su sector y explica qué implica para una cartera long-only."
+```
+
+The script prints the selected question first:
 
 ```text
-Is Apple (AAPL) overvalued relative to the Technology sector?
-What does this imply for a long-only portfolio?
+============================================================
+PREGUNTA
+============================================================
+...
 ```
+
+and the model's final answer is always requested in Spanish (Spain).
 
 ## Model
 
