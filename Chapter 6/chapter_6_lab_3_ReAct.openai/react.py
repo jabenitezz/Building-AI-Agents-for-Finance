@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import statistics
@@ -18,6 +19,11 @@ SECTOR_TICKERS = {
     "Financial Services": ["JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "AXP", "USB", "PNC"],
     "Communication Services": ["GOOGL", "META", "DIS", "NFLX", "T", "VZ", "CMCSA", "TMUS"],
 }
+
+DEFAULT_QUESTION = (
+    "¿Está Apple (AAPL) sobrevalorada en relación con el sector tecnológico? "
+    "¿Qué implica esto para una cartera long-only?"
+)
 
 
 def get_valuation_ratios(ticker: str) -> dict:
@@ -129,7 +135,10 @@ tool results or supplement them with unstated outside facts.
 
 You may briefly state a user-facing plan or interpretation, but do not reveal private
 chain-of-thought. Call the appropriate tools, inspect the observations, and continue
-until you have enough evidence. Conclude with a clear, well-grounded answer.
+until you have enough evidence.
+
+The final answer must be written entirely in Spanish (Spain), while keeping standard
+financial abbreviations such as P/E, EV/EBITDA, P/B and PEG unchanged.
 
 For a valuation-vs-sector question, normally:
 1. Retrieve the stock's valuation ratios and sector.
@@ -206,13 +215,34 @@ def run_react_agent(question: str) -> str:
             )
 
 
-if __name__ == "__main__":
-    question = (
-        "Is Apple (AAPL) overvalued relative to the Technology sector? "
-        "What does this imply for a long-only portfolio?"
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Agente financiero ReAct con OpenAI y datos de Yahoo Finance."
     )
-    answer = run_react_agent(question)
+    parser.add_argument(
+        "question",
+        nargs="?",
+        default=DEFAULT_QUESTION,
+        help=(
+            "Pregunta a analizar. Si se omite, se usa el ejemplo de Apple. "
+            "Para preguntas con espacios, pásala entre comillas."
+        ),
+    )
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    question = args.question
+
     print("\n" + "=" * 60)
-    print("FINAL ANSWER")
+    print("PREGUNTA")
+    print("=" * 60)
+    print(question)
+
+    answer = run_react_agent(question)
+
+    print("\n" + "=" * 60)
+    print("RESPUESTA FINAL")
     print("=" * 60)
     print(answer)
