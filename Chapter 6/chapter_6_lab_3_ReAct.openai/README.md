@@ -2,7 +2,7 @@
 
 OpenAI adaptation of `chapter_6_lab_3_ReAct`.
 
-The purpose and tools are intentionally kept the same as the original lab. The main change is the model/provider layer:
+The purpose and financial tools are intentionally kept the same as the original lab. The main change is the model/provider layer:
 
 - Claude Agent SDK → OpenAI Python SDK
 - Claude Sonnet → `gpt-4.1-mini`
@@ -12,29 +12,51 @@ The financial tools themselves still use live Yahoo Finance data through `yfinan
 
 ## ReAct flow
 
+This version preserves the pedagogical trace of the original lab:
+
 ```text
 Question
    ↓
 gpt-4.1-mini
    ↓
-ACTION: choose financial tool
+[THOUGHT] short public rationale
+   ↓
+[ACTION] choose financial tool
    ↓
 Yahoo Finance tool executes
    ↓
-OBSERVATION: tool result
+[OBSERVATION] tool result
    ↓
-gpt-4.1-mini evaluates the observation
+gpt-4.1-mini evaluates the new context
    ↓
-another tool if needed
+[THOUGHT] next public rationale
+   ↓
+[ACTION] next tool if needed
+   ↓
+...
    ↓
 final answer in Spanish
 ```
 
-The script prints each tool call as `[ACTION]` and each result as `[OBSERVATION]`. It may also print concise user-visible model text as `[MODEL]`. It does not expose private chain-of-thought.
+The `[THOUGHT]` line is deliberately a **short user-facing rationale** explaining what information is needed next or how the latest observation affects the next action. It is not private chain-of-thought.
+
+To make the trace reliable with OpenAI function calling, every financial tool schema includes a required display-only `thought` argument. The program prints it before the action and removes it before calling the underlying Python function. Therefore the actual financial tool behavior is unchanged.
+
+Example:
+
+```text
+[THOUGHT] Primero necesito conocer los múltiplos de NVIDIA y confirmar su sector.
+[ACTION] get_valuation_ratios({'ticker': 'NVDA'})
+[OBSERVATION] {"PE": ..., "sector": "Technology"}
+
+[THOUGHT] Con el sector ya identificado, necesito comparar esos múltiplos con su mediana.
+[ACTION] get_sector_median_pe({'sector': 'Technology'})
+[OBSERVATION] {...}
+```
 
 ## Tools preserved from the original lab
 
-The same three tools and the same underlying logic are retained:
+The same three financial tools and the same underlying logic are retained:
 
 - `get_valuation_ratios` — P/E, EV/EBITDA, P/B, PEG and Yahoo Finance sector.
 - `get_sector_median_pe` — median P/E and EV/EBITDA across the same curated large-cap sector peers.
@@ -92,16 +114,7 @@ Another example:
 python react.py "Analiza la valoración de NVIDIA (NVDA) frente a su sector y explica qué implica para una cartera long-only."
 ```
 
-The script prints the selected question first:
-
-```text
-============================================================
-PREGUNTA
-============================================================
-...
-```
-
-and the model's final answer is always requested in Spanish (Spain).
+The script prints the selected question first and the final answer is always requested in Spanish (Spain).
 
 ## Model
 
@@ -111,11 +124,7 @@ The default model is:
 gpt-4.1-mini
 ```
 
-You can override it in `.env` without changing the source:
-
-```env
-OPENAI_MODEL=gpt-4.1-mini
-```
+You can override it in `.env` without changing the source.
 
 ## Notes
 
