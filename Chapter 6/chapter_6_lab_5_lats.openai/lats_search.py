@@ -112,7 +112,7 @@ async def expand(node, k_expand, lessons):
         print(
             f"  [add ] {action_hint}: positions={prop['positions']} "
             f"pct={prop['percent_each']}  "
-            f"score={score * 10:.1f}/10  V={score:.2f}  "
+            f"score={score * 10:.1f}/10  reward={score:.2f}  "
             f"exposure={child.state['tech_exposure_pct']:.1f}%{flag}"
         )
     return new_pairs
