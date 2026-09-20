@@ -2,11 +2,13 @@
 
 Este documento explica **cómo encaja el patrón Tree of Thoughts (ToT) con el código real de `tot.py`**.
 
-La idea principal es sencilla:
+La idea principal es:
 
 > **ToT = GENERAR → EVALUAR → PODAR → EXPANDIR → EVALUAR**
 
-En este laboratorio, el problema no se resuelve con una única respuesta del modelo. El programa crea varias alternativas, las puntúa, elimina las menos prometedoras y profundiza solamente en las mejores.
+En este laboratorio el problema no se resuelve con una única respuesta del modelo. El programa crea varias alternativas, las puntúa, elimina las menos prometedoras y profundiza solamente en las mejores.
+
+> Nota de visualización: los esquemas de este documento están hechos en formato estrecho y con bloques Markdown clásicos para que se vean correctamente también en visores de libros electrónicos y lectores Markdown que no soportan bien los bloques con triple acento grave.
 
 ---
 
@@ -14,29 +16,29 @@ En este laboratorio, el problema no se resuelve con una única respuesta del mod
 
 El script empieza con:
 
-```python
-portfolio = "5,000 shares of NVDA held outright (~$5M concentrated single-name position)"
-scenario = "NVDA reports earnings tonight after the close; weekly implied volatility is elevated"
-```
+    portfolio = (
+        "5,000 shares of NVDA held outright "
+        "(~$5M concentrated single-name position)"
+    )
+
+    scenario = (
+        "NVDA reports earnings tonight after the close; "
+        "weekly implied volatility is elevated"
+    )
 
 Conceptualmente:
 
-```text
-                         RAÍZ
-                          │
-                          ▼
-      Posición concentrada de ~5 M$ en NVDA
-                          +
-            resultados después del cierre
-                          +
-          volatilidad implícita elevada
-```
-
-La pregunta implícita es:
-
-```text
-¿Cómo puedo cubrir esta posición ante este evento?
-```
+    RAÍZ
+      |
+      v
+    Posición concentrada en NVDA
+      |
+      +-- resultados después del cierre
+      |
+      +-- volatilidad implícita elevada
+      |
+      v
+    ¿Cómo cubrir la posición?
 
 El árbol comienza ahí.
 
@@ -46,36 +48,36 @@ El árbol comienza ahí.
 
 La primera expansión ocurre en:
 
-```python
-candidates = generate_hedges(portfolio, scenario, n=4)
-```
+    candidates = generate_hedges(
+        portfolio,
+        scenario,
+        n=4
+    )
 
 La función `generate_hedges()` pide al modelo **4 candidatos de cobertura distintos**:
 
-```python
-def generate_hedges(portfolio: str, scenario: str, n: int) -> list[dict]:
-    prompt = (
-        f"Portfolio: {portfolio}\nStress scenario: {scenario}\n"
-        f"Propose {n} distinct hedge candidates, each with a short rationale."
-    )
-```
+    def generate_hedges(portfolio, scenario, n):
+        prompt = (
+            f"Portfolio: {portfolio}\n"
+            f"Stress scenario: {scenario}\n"
+            f"Propose {n} distinct hedge candidates..."
+        )
 
-El modelo podría devolver algo de este estilo:
+El modelo podría devolver, por ejemplo:
 
-```text
-                         ROOT
-                          │
-              generar 4 alternativas
-                          │
-       ┌──────────────────┼──────────────────┐
-       │                  │                  │
-       ▼                  ▼                  ▼
- Comprar puts       Put spread          Collar        Hedge sectorial
-```
+    ROOT
+      |
+      +-- Hedge 1: Comprar puts
+      |
+      +-- Hedge 2: Put spread
+      |
+      +-- Hedge 3: Collar
+      |
+      +-- Hedge 4: Hedge sectorial
 
 Cada alternativa es una **rama del árbol**.
 
-En esta fase no se elige todavía ninguna. Solo se amplía el espacio de soluciones.
+En esta fase todavía no se elige ninguna. Solo se amplía el espacio de soluciones.
 
 ---
 
@@ -83,15 +85,16 @@ En esta fase no se elige todavía ninguna. Solo se amplía el espacio de solucio
 
 Después, cada candidato pasa por:
 
-```python
-score_hedge(portfolio, scenario, hedge)
-```
+    score_hedge(
+        portfolio,
+        scenario,
+        hedge
+    )
 
 La función le pide al modelo una puntuación de 1 a 10:
 
-```python
-f"Score this hedge from 1 to 10 on protection, cost, and basis risk."
-```
+    Score this hedge from 1 to 10
+    on protection, cost, and basis risk.
 
 Los criterios son:
 
@@ -101,97 +104,89 @@ Los criterios son:
 
 Una ejecución conceptual podría producir:
 
-```text
-Comprar puts        → 8
-Put spread          → 9
-Collar              → 7
-Hedge sectorial     → 5
-```
+    Comprar puts       -> 8
+    Put spread         -> 9
+    Collar             -> 7
+    Hedge sectorial    -> 5
 
 El código combina cada candidato con su evaluación:
 
-```python
-scored = [
-    {**c, **score_hedge(portfolio, scenario, c)}
-    for c in candidates
-]
-```
+    scored = [
+        {
+            **c,
+            **score_hedge(
+                portfolio,
+                scenario,
+                c
+            )
+        }
+        for c in candidates
+    ]
 
-Cada nodo pasa a tener aproximadamente esta información:
+Cada nodo pasa a tener aproximadamente:
 
-```json
-{
-  "name": "Put spread",
-  "rationale": "...",
-  "score": 9,
-  "reasoning": "..."
-}
-```
+    {
+        "name": "Put spread",
+        "rationale": "...",
+        "score": 9,
+        "reasoning": "..."
+    }
 
-Por tanto, en el primer nivel tenemos:
+Así queda el primer nivel:
 
-```text
-                       ROOT
-                        │
-           ┌────────────┼────────────┬────────────┐
-           │            │            │            │
-           ▼            ▼            ▼            ▼
-         Put        Put spread     Collar     Sector hedge
-          8              9            7             5
-```
+    ROOT
+      |
+      +-- Comprar puts    [8]
+      |
+      +-- Put spread      [9]
+      |
+      +-- Collar          [7]
+      |
+      +-- Hedge sectorial [5]
 
 ---
 
 ## 4. La poda: Beam Search
 
-Ahora aparece una pieza fundamental del algoritmo.
+Primero el código ordena los candidatos:
 
-Primero ordena los candidatos:
+    scored.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
 
-```python
-scored.sort(key=lambda x: x["score"], reverse=True)
-```
+Ejemplo:
 
-Quedarían, por ejemplo:
-
-```text
-1. Put spread       9
-2. Put              8
-3. Collar           7
-4. Sector hedge     5
-```
+    1. Put spread       9
+    2. Comprar puts     8
+    3. Collar           7
+    4. Hedge sectorial  5
 
 Después:
 
-```python
-retained = scored[:beam_width]
-```
+    retained = scored[:beam_width]
 
 Como por defecto:
 
-```python
-beam_width = 2
-```
+    beam_width = 2
 
 solo sobreviven las dos mejores ramas:
 
-```text
-                         ROOT
-                          │
-         ┌────────────────┼────────────────┐
-         │                │                │
-         ▼                ▼                ▼
-    Put spread          Put             descartadas
-       9                 8              Collar (7)
-                                          Sector hedge (5)
-```
+    ROOT
+      |
+      +-- Put spread   [9]  -> CONTINÚA
+      |
+      +-- Comprar puts [8]  -> CONTINÚA
+      |
+      +-- Collar       [7]  -> PODADO
+      |
+      +-- Sector hedge [5]  -> PODADO
 
-Esta es la **poda del árbol**.
+Esto es la **poda del árbol**.
 
 La idea de Beam Search es:
 
-> No explorar todas las ramas hasta el final.  
-> Profundizar solo en las más prometedoras.
+> No explorar todas las ramas hasta el final. Profundizar únicamente en las más prometedoras.
 
 ---
 
@@ -199,50 +194,54 @@ La idea de Beam Search es:
 
 Ahora el algoritmo profundiza en cada una de las dos mejores coberturas.
 
-La función utilizada es:
+La función es:
 
-```python
-generate_sizings(portfolio, scenario, hedge, n=3)
-```
+    generate_sizings(
+        portfolio,
+        scenario,
+        hedge,
+        n=3
+    )
 
 Para cada cobertura retenida genera **3 variantes de sizing o estructura**.
 
 Por ejemplo:
 
-```text
-Put spread
-   │
-   ├── Sizing A: 5% / 15% OTM, semanal
-   ├── Sizing B: ATM / 10% OTM, semanal
-   └── Sizing C: 10% / 20% OTM, mensual
-```
+    Put spread [9]
+      |
+      +-- S1: 5% / 15% OTM, semanal
+      |
+      +-- S2: ATM / 10% OTM, semanal
+      |
+      +-- S3: 10% / 20% OTM, mensual
 
-Y para la otra rama:
+Y para la segunda rama:
 
-```text
-Put
-   │
-   ├── Sizing A
-   ├── Sizing B
-   └── Sizing C
-```
+    Comprar puts [8]
+      |
+      +-- S1
+      |
+      +-- S2
+      |
+      +-- S3
 
-El árbol completo empieza a verse así:
+El árbol ya tiene dos niveles:
 
-```text
-                              ROOT
-                               │
-                     generar 4 hedges
-                               │
-         ┌─────────────────────┼─────────────────────┐
-         ▼                     ▼                     ▼
-     Put spread               Put              ramas descartadas
-        9                      8
-         │                     │
-    ┌────┼────┐           ┌────┼────┐
-    ▼    ▼    ▼           ▼    ▼    ▼
-   S1   S2   S3          S1   S2   S3
-```
+    ROOT
+      |
+      +-- Put spread [9]
+      |     |
+      |     +-- S1
+      |     +-- S2
+      |     +-- S3
+      |
+      +-- Comprar puts [8]
+            |
+            +-- S1
+            +-- S2
+            +-- S3
+
+Las otras dos ramas ya no existen para el resto de la búsqueda porque fueron podadas.
 
 ---
 
@@ -250,16 +249,19 @@ El árbol completo empieza a verse así:
 
 Cada sizing se evalúa con:
 
-```python
-score_sizing(portfolio, scenario, hedge, sizing)
-```
+    score_sizing(
+        portfolio,
+        scenario,
+        hedge,
+        sizing
+    )
 
-Los criterios cambian respecto al nivel anterior:
+En este nivel cambian los criterios:
 
-```python
-f"Score this sizing from 1 to 10 on residual exposure to the catalyst, "
-f"premium cost, and how cleanly it complements the parent hedge."
-```
+    Score this sizing from 1 to 10 on:
+    - residual exposure to the catalyst
+    - premium cost
+    - how cleanly it complements the parent hedge
 
 Es decir:
 
@@ -267,37 +269,26 @@ Es decir:
 - coste de la prima;
 - cómo complementa al hedge padre.
 
-Por ejemplo:
+Ejemplo:
 
-```text
-Put spread
-   │
-   ├── S1 → 7
-   ├── S2 → 9
-   └── S3 → 6
-```
+    Put spread [9]
+      |
+      +-- S1 -> 7
+      |
+      +-- S2 -> 9  <- MEJOR
+      |
+      +-- S3 -> 6
 
 El código ordena:
 
-```python
-scored_sizings.sort(key=lambda x: x["score"], reverse=True)
-```
+    scored_sizings.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
 
 y conserva el mejor:
 
-```python
-hedge["best_sizing"] = scored_sizings[0]
-```
-
-Así:
-
-```text
-Put spread
-   │
-   ├── S1 → 7
-   ├── S2 → 9  ← MEJOR
-   └── S3 → 6
-```
+    hedge["best_sizing"] = scored_sizings[0]
 
 Lo mismo sucede con la segunda rama retenida.
 
@@ -305,105 +296,94 @@ Lo mismo sucede con la segunda rama retenida.
 
 ## 7. Las iteraciones reales del algoritmo
 
-El proceso completo puede verse como varias iteraciones.
-
 ### Iteración 1 — Expandir desde la raíz
 
-```text
-ROOT
- │
- ├── Hedge 1
- ├── Hedge 2
- ├── Hedge 3
- └── Hedge 4
-```
+    ROOT
+      |
+      +-- Hedge 1
+      +-- Hedge 2
+      +-- Hedge 3
+      +-- Hedge 4
 
 Código:
 
-```python
-generate_hedges(..., n=4)
-```
+    generate_hedges(..., n=4)
 
 ### Iteración 2 — Evaluar el primer nivel
 
-```text
-Hedge 1 → score
-Hedge 2 → score
-Hedge 3 → score
-Hedge 4 → score
-```
+    Hedge 1 -> score
+    Hedge 2 -> score
+    Hedge 3 -> score
+    Hedge 4 -> score
 
 Código:
 
-```python
-score_hedge(...)
-```
+    score_hedge(...)
 
 ### Iteración 3 — Podar
 
-```text
-4 ramas
-   ↓
-ordenar
-   ↓
-mantener solo 2
-```
+    4 ramas
+       |
+       v
+    ordenar
+       |
+       v
+    conservar 2
 
 Código:
 
-```python
-scored.sort(...)
-retained = scored[:beam_width]
-```
+    scored.sort(...)
+    retained = scored[:beam_width]
 
 ### Iteración 4 — Expandir cada rama superviviente
 
-```text
-Hedge A                 Hedge B
-  │                       │
-  ├── S1                  ├── S1
-  ├── S2                  ├── S2
-  └── S3                  └── S3
-```
+    Hedge A
+      |
+      +-- S1
+      +-- S2
+      +-- S3
+
+    Hedge B
+      |
+      +-- S1
+      +-- S2
+      +-- S3
 
 Código:
 
-```python
-generate_sizings(..., n=3)
-```
+    generate_sizings(..., n=3)
 
 ### Iteración 5 — Evaluar las nuevas ramas
 
-```text
-Hedge A
-  ├── S1 → score
-  ├── S2 → score
-  └── S3 → score
+    Hedge A
+      |
+      +-- S1 -> score
+      +-- S2 -> score
+      +-- S3 -> score
 
-Hedge B
-  ├── S1 → score
-  ├── S2 → score
-  └── S3 → score
-```
-
-Código:
-
-```python
-score_sizing(...)
-```
-
-### Iteración 6 — Elegir el mejor sizing de cada hedge
-
-```text
-Hedge A → mejor sizing
-Hedge B → mejor sizing
-```
+    Hedge B
+      |
+      +-- S1 -> score
+      +-- S2 -> score
+      +-- S3 -> score
 
 Código:
 
-```python
-hedge["best_sizing"] = scored_sizings[0]
-```
+    score_sizing(...)
+
+### Iteración 6 — Elegir el mejor sizing
+
+    Hedge A
+      |
+      +-- mejor sizing
+
+    Hedge B
+      |
+      +-- mejor sizing
+
+Código:
+
+    hedge["best_sizing"] = scored_sizings[0]
 
 ---
 
@@ -411,82 +391,84 @@ hedge["best_sizing"] = scored_sizings[0]
 
 La función:
 
-```python
-best_hedges(...)
-```
+    best_hedges(...)
 
 es prácticamente el algoritmo Tree of Thoughts completo.
 
 Traducido a pseudocódigo:
 
-```text
-GENERAR 4 coberturas
+    GENERAR 4 coberturas
 
-PARA cada cobertura:
-    EVALUARLA
+    PARA cada cobertura:
+        EVALUARLA
 
-ORDENAR por puntuación
+    ORDENAR por puntuación
 
-PODAR:
-    conservar solo las 2 mejores
+    PODAR:
+        conservar solo las 2 mejores
 
-PARA cada cobertura superviviente:
-    GENERAR 3 variantes
-    EVALUAR las 3
-    ORDENAR
-    CONSERVAR la mejor variante
-```
+    PARA cada cobertura superviviente:
+        GENERAR 3 variantes
+        EVALUAR las 3
+        ORDENAR
+        CONSERVAR la mejor variante
 
 En una sola línea:
 
-```text
-GENERAR → EVALUAR → PODAR → EXPANDIR → EVALUAR → SELECCIONAR
-```
+    GENERAR
+       |
+       v
+    EVALUAR
+       |
+       v
+    PODAR
+       |
+       v
+    EXPANDIR
+       |
+       v
+    EVALUAR
+       |
+       v
+    SELECCIONAR
 
 ---
 
 ## 9. ¿Dónde está el árbol si no hay una clase `Tree`?
 
-El archivo no tiene algo como:
+El archivo no tiene:
 
-```python
-class Tree:
-    ...
-```
+    class Tree:
+        ...
 
 ni:
 
-```python
-class Node:
-    ...
-```
+    class Node:
+        ...
 
 porque el árbol está representado **de forma implícita** por listas, diccionarios y bucles.
 
 La correspondencia es:
 
-```text
-candidates
-    =
-ramas del nivel 1
+    candidates
+        =
+    ramas del nivel 1
 
-retained
-    =
-ramas que sobreviven a la poda
+    retained
+        =
+    ramas que sobreviven a la poda
 
-sizings
-    =
-ramas del nivel 2
+    sizings
+        =
+    ramas del nivel 2
 
-best_sizing
-    =
-rama ganadora dentro de cada hedge retenido
-```
+    best_sizing
+        =
+    mejor hijo de cada hedge retenido
 
 Por tanto:
 
-> Tree of Thoughts no exige implementar físicamente una clase Tree.  
-> Lo importante es que el algoritmo genere, evalúe, pode y expanda alternativas.
+> Tree of Thoughts no exige implementar físicamente una clase `Tree`. Lo importante es que el algoritmo genere, evalúe, pode y expanda alternativas.
 
 ---
 
@@ -498,61 +480,49 @@ En este laboratorio, `gpt-4.1-mini` actúa en dos papeles.
 
 Lo hace en:
 
-```python
-generate_hedges()
-generate_sizings()
-```
+    generate_hedges()
+    generate_sizings()
 
 Su trabajo es:
 
-```text
-"Propón alternativas"
-```
+    "Propón alternativas"
 
 ### Papel 2 — Evaluador
 
 Lo hace en:
 
-```python
-score_hedge()
-score_sizing()
-```
+    score_hedge()
+    score_sizing()
 
 Su trabajo es:
 
-```text
-"Evalúa esta alternativa"
-```
+    "Evalúa esta alternativa"
 
-Pero la poda no la realiza el modelo.
+Pero la poda **no la realiza el modelo**.
 
 La hace Python:
 
-```python
-scored.sort(...)
-retained = scored[:beam_width]
-```
+    scored.sort(...)
+    retained = scored[:beam_width]
 
-Por tanto:
+Visualmente:
 
-```text
-LLM GENERADOR
-     │
-     ▼
- crea ramas
-     │
-     ▼
-LLM EVALUADOR
-     │
-     ▼
- puntúa ramas
-     │
-     ▼
-PYTHON
-     │
-     ▼
-ordena y poda
-```
+    LLM GENERADOR
+         |
+         v
+      crea ramas
+         |
+         v
+    LLM EVALUADOR
+         |
+         v
+     puntúa ramas
+         |
+         v
+       PYTHON
+         |
+         v
+     ordena y poda
 
 Esta separación es importante porque el modelo no controla todo el algoritmo.
 
@@ -562,164 +532,181 @@ Esta separación es importante porque el modelo no controla todo el algoritmo.
 
 Las cuatro funciones que consultan al LLM terminan pasando por:
 
-```python
-call_structured(prompt, schema, schema_name)
-```
+    call_structured(
+        prompt,
+        schema,
+        schema_name
+    )
 
 Esta función centraliza la llamada a OpenAI:
 
-```python
-response = client.responses.create(
-    model=MODEL,
-    input=prompt,
-    max_output_tokens=2048,
-    text={
-        "format": {
-            "type": "json_schema",
-            "name": schema_name,
-            "schema": schema,
-            "strict": True,
-        }
-    },
-    store=False,
-)
-```
+    response = client.responses.create(
+        model=MODEL,
+        input=prompt,
+        max_output_tokens=2048,
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": schema_name,
+                "schema": schema,
+                "strict": True,
+            }
+        },
+        store=False,
+    )
 
 El objetivo del JSON Schema es evitar una respuesta libre difícil de procesar.
 
-Por ejemplo, para candidatos esperamos:
+Para candidatos se espera algo parecido a:
 
-```json
-{
-  "candidates": [
     {
-      "name": "...",
-      "rationale": "..."
+        "candidates": [
+            {
+                "name": "...",
+                "rationale": "..."
+            }
+        ]
     }
-  ]
-}
-```
 
-Y para una evaluación:
+Para una evaluación:
 
-```json
-{
-  "score": 8,
-  "reasoning": "..."
-}
-```
+    {
+        "score": 8,
+        "reasoning": "..."
+    }
 
-Eso permite que Python haga después:
+Eso permite que Python haga:
 
-```python
-json.loads(text)
-```
+    json.loads(text)
 
-y pueda ordenar las ramas usando directamente:
+y después pueda ordenar usando directamente:
 
-```python
-x["score"]
-```
+    x["score"]
 
 ---
 
 ## 12. Visualización completa del algoritmo
 
-```text
-                         PORTFOLIO + SCENARIO
-                                  │
-                                  ▼
-                         generate_hedges(n=4)
-                                  │
-           ┌──────────────────────┼──────────────────────┐
-           │                      │                      │
-           ▼                      ▼                      ▼
-        Hedge A                Hedge B                Hedge C        Hedge D
-           │                      │                      │              │
-           ▼                      ▼                      ▼              ▼
-      score_hedge            score_hedge            score_hedge    score_hedge
-           │                      │                      │              │
-          9                      8                      6              5
-           │                      │                      │              │
-           └────────────── ordenar + beam search ───────┴──────────────┘
-                                  │
-                         beam_width = 2
-                                  │
-                   ┌──────────────┴──────────────┐
-                   │                             │
-                   ▼                             ▼
-               Hedge A                       Hedge B
-                   │                             │
-         generate_sizings(n=3)          generate_sizings(n=3)
-                   │                             │
-             ┌─────┼─────┐                 ┌─────┼─────┐
-             ▼     ▼     ▼                 ▼     ▼     ▼
-            A1    A2    A3                B1    B2    B3
-             │     │     │                 │     │     │
-             ▼     ▼     ▼                 ▼     ▼     ▼
-           score score score             score score score
-             │     │     │                 │     │     │
-             7     9     6                 8     6     5
-                   │                       │
-                   ▼                       ▼
-              best_sizing A           best_sizing B
-                   │                       │
-                   └───────────┬───────────┘
-                               ▼
-                        RESULTADO FINAL
-```
+Esta es la misma búsqueda completa, pero en formato vertical para que se vea bien incluso en una página estrecha:
+
+    PORTFOLIO + SCENARIO
+             |
+             v
+      generate_hedges(4)
+             |
+             v
+    +-------------------+
+    | Nivel 1           |
+    |                   |
+    | Hedge A -> 9      |
+    | Hedge B -> 8      |
+    | Hedge C -> 6      |
+    | Hedge D -> 5      |
+    +-------------------+
+             |
+             v
+       ordenar scores
+             |
+             v
+        beam_width=2
+             |
+             v
+    +-------------------+
+    | RETENIDOS         |
+    |                   |
+    | Hedge A -> 9      |
+    | Hedge B -> 8      |
+    +-------------------+
+             |
+       +-----+-----+
+       |           |
+       v           v
+    Hedge A     Hedge B
+       |           |
+       v           v
+    3 sizings   3 sizings
+       |           |
+       v           v
+    evaluar     evaluar
+       |           |
+       v           v
+    mejor A     mejor B
+       |           |
+       +-----+-----+
+             |
+             v
+      RESULTADO FINAL
+
+Otra forma de verlo, mostrando las ramas:
+
+    ROOT
+      |
+      +-- Hedge A [9]
+      |     |
+      |     +-- A1 [7]
+      |     +-- A2 [9] <- mejor
+      |     +-- A3 [6]
+      |
+      +-- Hedge B [8]
+      |     |
+      |     +-- B1 [8] <- mejor
+      |     +-- B2 [6]
+      |     +-- B3 [5]
+      |
+      +-- Hedge C [6] -> PODADO
+      |
+      +-- Hedge D [5] -> PODADO
 
 ---
 
 ## 13. Diferencia con Self-Consistency
 
-En Self-Consistency se hace algo parecido a:
+En Self-Consistency:
 
-```text
-mismo problema
-    │
-    ├── respuesta 1
-    ├── respuesta 2
-    ├── respuesta 3
-    ├── respuesta 4
-    └── respuesta 5
-             │
-             ▼
-           votación
-```
+    mismo problema
+      |
+      +-- respuesta 1
+      +-- respuesta 2
+      +-- respuesta 3
+      +-- respuesta 4
+      +-- respuesta 5
+      |
+      v
+    votación
 
 Los caminos son esencialmente independientes.
 
 En Tree of Thoughts:
 
-```text
-problema
-   │
-   ▼
-generar alternativas
-   │
-   ▼
-evaluar
-   │
-   ▼
-podar
-   │
-   ▼
-profundizar únicamente en las mejores
-   │
-   ▼
-volver a evaluar
-```
+    problema
+      |
+      v
+    generar alternativas
+      |
+      v
+    evaluar
+      |
+      v
+    podar
+      |
+      v
+    profundizar en las mejores
+      |
+      v
+    volver a evaluar
 
-La diferencia clave es:
+La diferencia clave:
 
-```text
-Self-Consistency
-= varios caminos independientes + consenso
+    Self-Consistency
+      =
+    caminos independientes + consenso
 
-Tree of Thoughts
-= exploración estructurada + evaluación + poda + expansión
-```
+    Tree of Thoughts
+      =
+    exploración estructurada
+      + evaluación
+      + poda
+      + expansión
 
 ---
 
@@ -728,46 +715,57 @@ Tree of Thoughts
 | Concepto ToT | Código en `tot.py` |
 |---|---|
 | Estado inicial | `portfolio` + `scenario` |
-| Generar pensamientos/alternativas | `generate_hedges()` |
-| Evaluar pensamientos | `score_hedge()` |
-| Seleccionar ramas | `scored.sort(...)` |
+| Generar alternativas | `generate_hedges()` |
+| Evaluar alternativas | `score_hedge()` |
+| Ordenar ramas | `scored.sort(...)` |
 | Poda / Beam Search | `retained = scored[:beam_width]` |
-| Expandir ramas supervivientes | `generate_sizings()` |
+| Expandir supervivientes | `generate_sizings()` |
 | Evaluar segundo nivel | `score_sizing()` |
 | Elegir mejor hijo | `scored_sizings[0]` |
-| Orquestador del árbol | `best_hedges()` |
+| Orquestador | `best_hedges()` |
 
 ---
 
 ## 15. La idea que hay que recordar
 
-Si solo quieres recordar una cosa de este archivo, que sea esta:
+Si solo quieres recordar una cosa de este archivo:
 
-```text
-Tree of Thoughts en tot.py
+    Tree of Thoughts en tot.py
 
-1. GENERA varias soluciones.
-2. EVALÚA cada solución.
-3. PODA las peores.
-4. EXPANDE las mejores.
-5. EVALÚA las nuevas ramas.
-6. SELECCIONA las mejores estructuras finales.
-```
+    1. GENERA varias soluciones.
+    2. EVALÚA cada solución.
+    3. PODA las peores.
+    4. EXPANDE las mejores.
+    5. EVALÚA las nuevas ramas.
+    6. SELECCIONA las mejores.
 
 En este ejercicio:
 
-```text
-Nivel 1:
-¿Qué instrumento de cobertura utilizar?
+    NIVEL 1
+      |
+      v
+    ¿Qué instrumento de cobertura utilizar?
 
-Nivel 2:
-¿Cómo estructurar exactamente ese instrumento?
-```
+    NIVEL 2
+      |
+      v
+    ¿Cómo estructurar exactamente
+    ese instrumento?
 
-Y eso explica por qué `best_hedges()` es el corazón del laboratorio:
+Y por eso `best_hedges()` es el corazón del laboratorio:
 
-```text
-GENERAR → EVALUAR → PODAR → EXPANDIR → EVALUAR
-```
+    GENERAR
+       |
+       v
+    EVALUAR
+       |
+       v
+    PODAR
+       |
+       v
+    EXPANDIR
+       |
+       v
+    EVALUAR
 
 Ese flujo es la traducción directa del patrón **Tree of Thoughts** al código de `tot.py`.
