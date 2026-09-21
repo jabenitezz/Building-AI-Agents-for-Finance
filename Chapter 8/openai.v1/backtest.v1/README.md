@@ -20,7 +20,10 @@ backtest.v1 pasa una fecha histórica real a toda la capa de datos:
 - Macro: VIX, Treasury 10Y y S&P 500 hasta as_of_date.
 - Fundamentales: último 10-K SEC que YA estaba presentado en as_of_date.
 - Noticias: Alpha Vantage NEWS_SENTIMENT filtrado por ticker y acotado entre la fecha previa y as_of_date.
-- Se solicitan hasta 50 candidatos por ventana y solo se pasan al agente los que superan un umbral de relevancia del ticker (0.20 por defecto).
+- Se solicitan hasta 50 candidatos por ventana y se inspeccionan TODOS antes de elegir los 12 finales.
+- Una noticia debe mencionar de forma determinista al ticker, compañía o producto específico (por ejemplo NVIDIA/NVDA/B200/H200) en título o resumen.
+- Si la coincidencia está en el título basta un relevance score >= 0.20; si solo aparece en el resumen se exige >= 0.70.
+- Se priorizan coincidencias directas en título, después relevancia del proveedor y finalmente recencia.
 - Si la fuente histórica de noticias falla, NO se sustituye por noticias actuales.
 - La señal se considera generada al final del día de decisión y la operación se ejecuta en la apertura de la siguiente sesión bursátil.
 
@@ -49,9 +52,10 @@ ALPHAVANTAGE_API_KEY se usa exclusivamente para NEWS_SENTIMENT histórico. La co
 Opcionalmente puedes ajustar:
 
     ALPHAVANTAGE_MIN_RELEVANCE_SCORE=0.20
+    ALPHAVANTAGE_SUMMARY_ONLY_MIN_RELEVANCE_SCORE=0.70
     ALPHAVANTAGE_PROVIDER_NEWS_LIMIT=50
 
-El primer parámetro elimina artículos tangenciales; el segundo define cuántos candidatos pide al proveedor antes de quedarse con los 12 titulares más relevantes.
+El primer umbral se aplica cuando el ticker/compañía/producto aparece directamente en el título. El segundo es deliberadamente más estricto cuando la coincidencia solo está en el resumen. El tercer parámetro define cuántos candidatos pide al proveedor antes de filtrar y ordenar.
 
 ## Primero: ver el plan sin gastar API
 
@@ -107,7 +111,7 @@ Incluye:
 - fecha de filing SEC y periodo contable
 - P/E, P/B, ROE, margen, D/E, current ratio, crecimiento
 - SMA50, SMA200, RSI, volatilidad
-- proveedor, ventana histórica de noticias, umbral de relevancia, candidatos raw, descartados y titulares finales
+- proveedor, ventana histórica de noticias, candidatos raw, elegibles, rechazados, duplicados/vacíos, dos umbrales de relevancia y titulares finales
 - VIX, Treasury 10Y y retorno mensual S&P
 - informes de los cuatro especialistas
 - tesis del Portfolio Manager
