@@ -46,9 +46,12 @@ def main() -> None:
     print(f"Ticker    : {args.ticker.upper()}")
     print(f"Ventana   : {args.start} -> {args.end}")
     print(f"Raw       : {result.get('raw_count', 'N/D')}")
-    print(f"Umbral    : {result.get('relevance_threshold', 'N/D')}")
-    print(f"Filtradas : {result.get('filtered_out_count', 'N/D')}")
-    print(f"Relevantes: {len(result.get('headlines') or [])}")
+    print(f"Elegibles : {result.get('eligible_count', 'N/D')}")
+    print(f"Final     : {len(result.get('headlines') or [])}")
+    print(f"Rechazadas: {result.get('filtered_out_count', 'N/D')}")
+    print(f"Dup/vacías: {result.get('duplicate_or_empty_count', 'N/D')}")
+    print(f"Umbral T  : {result.get('title_relevance_threshold', 'N/D')}")
+    print(f"Umbral R  : {result.get('summary_relevance_threshold', 'N/D')}")
     print(f"Error     : {result.get('error') or 'NINGUNO'}")
     print("-" * 100)
 
@@ -56,7 +59,9 @@ def main() -> None:
         print(
             f"{i:02d}. {article.get('time_published') or ''} | "
             f"{article.get('source') or ''} | "
-            f"relevance={article.get('ticker_relevance_score')}\n"
+            f"relevance={article.get('ticker_relevance_score')} | "
+            f"match={article.get('match_scope')} | "
+            f"aliases={','.join(article.get('matched_aliases') or [])}\n"
             f"    {article.get('title') or ''}"
         )
 
