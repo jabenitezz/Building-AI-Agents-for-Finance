@@ -205,3 +205,18 @@ Salidas:
     backtest.v1/output/backtest/signals_used.csv
 
 Métricas: rentabilidad total/anualizada, volatilidad anualizada, Sharpe con rf=0, max drawdown, exposición media/máxima, turnover, órdenes, trades cerrados e hit rate.
+
+
+### Compatibilidad Plotly / VectorBT
+
+VectorBT 1.1.0 todavía inicializa plantillas que contienen `scattermapbox`. Plotly 7 elimina ese tipo de traza, por lo que `import vectorbt` puede fallar antes de ejecutar el backtest. Por eso requirements.txt fija:
+
+    plotly>=6.0,<7.0
+
+Si aparece un error `Invalid property ... scattermapbox`, reinstala las dependencias del backtest:
+
+    uv pip install --upgrade -r "backtest.v1/requirements.txt"
+
+Y comprueba:
+
+    python -c "import plotly, vectorbt; print('plotly', plotly.__version__, 'vectorbt', vectorbt.__version__)"
