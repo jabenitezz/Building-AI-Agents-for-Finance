@@ -7,7 +7,7 @@ never used as fallbacks.
 Data sources:
 - Prices/technicals/macro: yfinance historical series, cut at as_of_date.
 - Fundamentals: SEC Company Facts, using only facts filed on/before as_of_date.
-- News: GDELT DOC API, explicitly bounded to a historical date window.
+- News: Alpha Vantage NEWS_SENTIMENT, bounded by ticker and historical date window.
 
 This is still an educational research harness. SEC annual facts are used for
 fundamentals to keep the point-in-time logic auditable and conservative.
@@ -27,19 +27,13 @@ import yfinance as yf
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 SEC_CACHE = CACHE_DIR / "sec"
-GDELT_CACHE = CACHE_DIR / "gdelt"
+ALPHAVANTAGE_CACHE = CACHE_DIR / "alphavantage_news"
 SEC_CACHE.mkdir(parents=True, exist_ok=True)
-GDELT_CACHE.mkdir(parents=True, exist_ok=True)
+ALPHAVANTAGE_CACHE.mkdir(parents=True, exist_ok=True)
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
-GDELT_DOC_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
-
-COMPANY_NAMES = {
-    "TSLA": "Tesla",
-    "MSFT": "Microsoft",
-    "NVDA": "NVIDIA",
-}
+ALPHAVANTAGE_URL = "https://www.alphavantage.co/query"
 
 
 def _trace(message: str) -> None:
@@ -555,82 +549,111 @@ def fetch_fundamentals(ticker: str, as_of_date: date, price: float) -> dict[str,
     }
 
 
+def _alphavantage_api_key() -> str:
+    key = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError(
+            "Falta ALPHAVANTAGE_API_KEY en Chapter 8/openai.v1/.env "
+            "o backtest.v1/.env."
+        )
+    return key
+
+
+def _ticker_sentiment_for(article: dict[str, Any], ticker: str) -> dict[str, Any] | None:
+    """Return Alpha Vantage ticker-specific metadata for audit only.
+
+    We store Alpha Vantage's own sentiment/relevance fields in the raw article
+    record, but the LLM sentiment agent is intentionally fed the article text,
+    not Alpha Vantage's sentiment label, so the experiment still evaluates our
+    own agent.
+    """
+    for item in article.get("ticker_sentiment") or []:
+        if str(item.get("ticker", "")).upper() == ticker.upper():
+            return item
+    return None
+
+
 def fetch_historical_news(
     ticker: str,
     start_date: date,
     end_date: date,
     max_records: int = 12,
 ) -> dict[str, Any]:
-    """Historical headlines via GDELT, with cache and 429 backoff.
+    """Historical ticker news from Alpha Vantage NEWS_SENTIMENT.
 
-    Operational API failures are returned in `error`; callers can distinguish
-    them from a legitimate zero-headline historical window.
+    Alpha Vantage accepts time_from/time_to in YYYYMMDDTHHMM and ticker
+    filtering natively. Successful responses are cached by ticker/window so a
+    rerun of the backtest does not consume another API request.
     """
-    company = COMPANY_NAMES.get(ticker.upper(), ticker.upper())
-    query = f'("{company}" OR {ticker.upper()})'
-    params = {
-        "query": query,
-        "mode": "ArtList",
-        "maxrecords": max_records,
-        "format": "json",
-        "sort": "HybridRel",
-        "startdatetime": start_date.strftime("%Y%m%d000000"),
-        "enddatetime": end_date.strftime("%Y%m%d235959"),
-    }
-
-    cache_path = GDELT_CACHE / (
-        f"{ticker.upper()}_{start_date.isoformat()}_{end_date.isoformat()}_{max_records}.json"
+    ticker = ticker.upper()
+    cache_path = ALPHAVANTAGE_CACHE / (
+        f"{ticker}_{start_date.isoformat()}_{end_date.isoformat()}_{max_records}.json"
     )
+
     if cache_path.exists():
         data = json.loads(cache_path.read_text(encoding="utf-8"))
-        _trace(f"GDELT cache HIT {ticker} {start_date}..{end_date}")
+        _trace(f"Alpha Vantage cache HIT {ticker} {start_date}..{end_date}")
     else:
-        retries = max(1, int(os.getenv("GDELT_MAX_RETRIES", "4")))
-        base_wait = max(1.0, float(os.getenv("GDELT_BACKOFF_SECONDS", "3")))
-        data = None
-        last_error: Exception | None = None
+        params = {
+            "function": "NEWS_SENTIMENT",
+            "tickers": ticker,
+            "time_from": start_date.strftime("%Y%m%dT0000"),
+            "time_to": end_date.strftime("%Y%m%dT2359"),
+            "sort": "RELEVANCE",
+            "limit": max_records,
+            "apikey": _alphavantage_api_key(),
+        }
 
-        with httpx.Client(
-            timeout=30.0,
-            follow_redirects=True,
-            headers={"User-Agent": "Building-AI-Agents-for-Finance/Chapter8"},
-        ) as client:
-            for attempt in range(1, retries + 1):
-                try:
-                    response = client.get(GDELT_DOC_URL, params=params)
-                    if response.status_code == 429:
-                        retry_after = response.headers.get("Retry-After")
-                        try:
-                            wait = float(retry_after) if retry_after else base_wait * (2 ** (attempt - 1))
-                        except ValueError:
-                            wait = base_wait * (2 ** (attempt - 1))
-                        if attempt < retries:
-                            _trace(
-                                f"GDELT 429 para {ticker}; reintento {attempt}/{retries} "
-                                f"en {wait:.0f}s"
-                            )
-                            time.sleep(wait)
-                            continue
-                    response.raise_for_status()
-                    data = response.json()
-                    break
-                except Exception as exc:
-                    last_error = exc
-                    if attempt < retries:
-                        wait = base_wait * (2 ** (attempt - 1))
-                        _trace(
-                            f"GDELT error para {ticker}; reintento {attempt}/{retries} "
-                            f"en {wait:.0f}s: {exc}"
-                        )
-                        time.sleep(wait)
-
-        if data is None:
-            error_text = str(last_error or "GDELT sin respuesta")
+        timeout = float(os.getenv("ALPHAVANTAGE_TIMEOUT_SECONDS", "30"))
+        try:
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                response = client.get(ALPHAVANTAGE_URL, params=params)
+                response.raise_for_status()
+                data = response.json()
+        except Exception as exc:
+            error_text = f"Alpha Vantage HTTP/JSON error: {exc}"
             _trace(
-                f"GDELT no disponible para {ticker} {start_date}..{end_date}: {error_text}"
+                f"Alpha Vantage no disponible para {ticker} "
+                f"{start_date}..{end_date}: {error_text}"
             )
             return {
-                "source": "GDELT",
+                "source": "Alpha Vantage NEWS_SENTIMENT",
+                "window_start": start_date.isoformat(),
+                "window_end": end_date.isoformat(),
+                "headlines": [],
+                "articles": [],
+                "error": error_text,
+            }
+
+        # Alpha Vantage can return HTTP 200 with a service/rate-limit message.
+        api_error = (
+            data.get("Error Message")
+            or data.get("Note")
+            or data.get("Information")
+        )
+        if api_error:
+            error_text = str(api_error)
+            _trace(
+                f"Alpha Vantage rechazó la consulta para {ticker} "
+                f"{start_date}..{end_date}: {error_text}"
+            )
+            return {
+                "source": "Alpha Vantage NEWS_SENTIMENT",
+                "window_start": start_date.isoformat(),
+                "window_end": end_date.isoformat(),
+                "headlines": [],
+                "articles": [],
+                "error": error_text,
+            }
+
+        if "feed" not in data:
+            error_text = (
+                "Respuesta Alpha Vantage sin campo 'feed'; "
+                f"claves recibidas={sorted(data.keys())}"
+            )
+            _trace(error_text)
+            return {
+                "source": "Alpha Vantage NEWS_SENTIMENT",
                 "window_start": start_date.isoformat(),
                 "window_end": end_date.isoformat(),
                 "headlines": [],
@@ -640,30 +663,52 @@ def fetch_historical_news(
 
         cache_path.write_text(json.dumps(data), encoding="utf-8")
 
-    articles = data.get("articles") or []
+        # Keep requests gentle even though normal runs are well below the daily
+        # allowance. Cached reruns do not sleep.
+        delay = float(os.getenv("ALPHAVANTAGE_REQUEST_DELAY_SECONDS", "1.0"))
+        if delay > 0:
+            time.sleep(delay)
+
+    feed = data.get("feed") or []
     cleaned: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for article in articles:
+
+    for article in feed:
         title = str(article.get("title") or "").strip()
         if not title or title.lower() in seen:
             continue
         seen.add(title.lower())
+
+        published = str(article.get("time_published") or "").strip()
+        ticker_meta = _ticker_sentiment_for(article, ticker)
         cleaned.append({
             "title": title,
             "url": article.get("url"),
-            "domain": article.get("domain"),
-            "seendate": article.get("seendate"),
-            "language": article.get("language"),
+            "source": article.get("source"),
+            "source_domain": article.get("source_domain"),
+            "time_published": published,
+            "summary": article.get("summary"),
+            "authors": article.get("authors") or [],
+            # Audit metadata only; not injected into the sentiment prompt.
+            "ticker_relevance_score": (
+                ticker_meta.get("relevance_score") if ticker_meta else None
+            ),
+            "provider_ticker_sentiment_score": (
+                ticker_meta.get("ticker_sentiment_score") if ticker_meta else None
+            ),
+            "provider_ticker_sentiment_label": (
+                ticker_meta.get("ticker_sentiment_label") if ticker_meta else None
+            ),
         })
         if len(cleaned) >= max_records:
             break
 
     headlines = [
-        f"[{a.get('seendate') or ''}, {a.get('domain') or ''}] {a['title']}"
+        f"[{a.get('time_published') or ''}, {a.get('source') or ''}] {a['title']}"
         for a in cleaned
     ]
     return {
-        "source": "GDELT",
+        "source": "Alpha Vantage NEWS_SENTIMENT",
         "window_start": start_date.isoformat(),
         "window_end": end_date.isoformat(),
         "headlines": headlines,
