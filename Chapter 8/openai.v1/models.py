@@ -114,6 +114,7 @@ def _make_reasoning_model(
     effort: str,
 ) -> ChatOpenAI:
     """Create a GPT-5.6 model through the Responses API."""
+    trace("models", f"CREATE model={model} reasoning={effort} max_tokens={max_tokens}")
     return ChatOpenAI(
         model=model,
         max_tokens=max_tokens,
