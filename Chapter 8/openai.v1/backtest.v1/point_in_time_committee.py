@@ -124,7 +124,9 @@ def sentiment_analyst(state: PITCommitteeState) -> dict:
     headlines = data.get("headlines") or []
     trace(
         "pit/sentiment",
-        f"DATA source={data.get('source')} headlines={len(headlines)}",
+        f"DATA source={data.get('source')} raw={data.get('raw_count')} "
+        f"headlines={len(headlines)} filtered={data.get('filtered_out_count')} "
+        f"threshold={data.get('relevance_threshold')}",
     )
     body = "\n- ".join(headlines) if headlines else "(sin titulares históricos disponibles)"
     sys = SystemMessage(content=(
@@ -164,9 +166,12 @@ def macro_analyst(state: PITCommitteeState) -> dict:
 def portfolio_manager(state: PITCommitteeState) -> dict:
     trace("pit/portfolio_manager", f"START {state['ticker']} as_of={state['as_of_date']}")
     sys = SystemMessage(content=(
-        "Eres el Portfolio Manager de un backtest histórico LONG-ONLY. Toda la "
-        "información suministrada era conocida en la fecha indicada. No uses hechos "
-        "posteriores. Sintetiza los cuatro informes en español, máximo 250 palabras. "
+        "Eres el Portfolio Manager de un backtest histórico LONG-ONLY. La señal se "
+        "genera DESPUÉS de terminar el día histórico indicado y puede usar toda la "
+        "información disponible durante ese día. Cualquier operación se ejecutará en "
+        "la APERTURA DE LA SIGUIENTE SESIÓN bursátil, nunca al cierre del mismo día. "
+        "No uses hechos posteriores a la fecha indicada. Sintetiza los cuatro informes "
+        "en español, máximo 250 palabras. "
         "Termina ESTRICTAMENTE con:\n"
         "ACTION=<BUY|HOLD|SELL>; CONFIDENCE=<0-100>; SIZE_PCT=<0.0-5.0>\n"
         "BUY abre/aumenta un largo; HOLD no añade; SELL significa salir/no mantener "
@@ -174,7 +179,9 @@ def portfolio_manager(state: PITCommitteeState) -> dict:
         "0.5 y 3.0; HOLD y SELL deben tener SIZE_PCT=0.0."
     ))
     msg = HumanMessage(content=(
-        f"Fecha: {state['as_of_date']}\nTicker: {state['ticker']}\n\n"
+        f"Fecha de señal EOD: {state['as_of_date']}\n"
+        f"Regla de ejecución: apertura de la siguiente sesión\n"
+        f"Ticker: {state['ticker']}\n\n"
         f"--- Fundamental ---\n{state['fundamentals_report']}\n\n"
         f"--- Técnico ---\n{state['technicals_report']}\n\n"
         f"--- Sentimiento ---\n{state['sentiment_report']}\n\n"
