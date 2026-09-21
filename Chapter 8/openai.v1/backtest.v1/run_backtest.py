@@ -459,12 +459,33 @@ def _trades_frame(pf: vbt.Portfolio) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def compute_metrics(name: str, pf: vbt.Portfolio) -> dict[str, Any]:
+def compute_metrics(
+    name: str,
+    pf: vbt.Portfolio,
+    initial_cash: float,
+) -> dict[str, Any]:
     value = _value_series(pf)
-    returns = value.pct_change().replace([np.inf, -np.inf], np.nan).dropna()
 
-    initial = float(value.iloc[0])
+    # IMPORTANT: value.iloc[0] is already the END-OF-DAY portfolio value after
+    # the first execution at that day's open. Using it as the denominator
+    # silently drops the first trading day's PnL. Anchor performance to the
+    # actual starting cash immediately before the first execution instead.
+    initial = float(initial_cash)
     final = float(value.iloc[-1])
+
+    baseline_idx = value.index[0] - pd.Timedelta(days=1)
+    value_with_baseline = pd.concat(
+        [
+            pd.Series([initial], index=pd.DatetimeIndex([baseline_idx])),
+            value,
+        ]
+    )
+    returns = (
+        value_with_baseline.pct_change()
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna()
+    )
+
     total_return = final / initial - 1.0
 
     periods = max(len(returns), 1)
@@ -481,7 +502,7 @@ def compute_metrics(name: str, pf: vbt.Portfolio) -> dict[str, Any]:
         else np.nan
     )
 
-    dd = value / value.cummax() - 1.0
+    dd = value_with_baseline / value_with_baseline.cummax() - 1.0
     max_drawdown = float(dd.min()) if not dd.empty else np.nan
 
     asset_value = _asset_value_series(pf).reindex(value.index).fillna(0.0)
@@ -658,7 +679,10 @@ def main() -> None:
     }
 
     summary = pd.DataFrame(
-        [compute_metrics(name, pf) for name, pf in portfolios.items()]
+        [
+            compute_metrics(name, pf, args.initial_cash)
+            for name, pf in portfolios.items()
+        ]
     )
     print_summary(summary)
 
@@ -669,6 +693,18 @@ def main() -> None:
         },
         axis=1,
     ).sort_index().ffill()
+
+    # Add the common pre-execution baseline so exported equity curves and
+    # summary metrics tell the same story from the real initial capital.
+    baseline_date = equity.index.min() - pd.Timedelta(days=1)
+    baseline = pd.DataFrame(
+        {
+            col: [float(args.initial_cash)]
+            for col in equity.columns
+        },
+        index=pd.DatetimeIndex([baseline_date]),
+    )
+    equity = pd.concat([baseline, equity]).sort_index()
 
     summary.to_csv(output_dir / "summary.csv", index=False)
     equity.to_csv(output_dir / "equity_curve.csv", index_label="date")
