@@ -115,6 +115,12 @@ def sentiment_analyst(state: PITCommitteeState) -> dict:
     end = _d(state["as_of_date"])
     trace("pit/sentiment", f"START {ticker} window={start}..{end}")
     data = fetch_historical_news(ticker, start, end)
+    if data.get("error"):
+        raise RuntimeError(
+            f"Fallo operativo recuperando noticias históricas para {ticker} "
+            f"{start}..{end}: {data['error']}. "
+            "No se genera una señal degradada; reanuda la ejecución más tarde."
+        )
     headlines = data.get("headlines") or []
     trace("pit/sentiment", f"DATA source=GDELT headlines={len(headlines)}")
     body = "\n- ".join(headlines) if headlines else "(sin titulares históricos disponibles)"
