@@ -695,12 +695,23 @@ def fetch_historical_news(
         f"v3_{ticker}_{start_date.isoformat()}_{end_date.isoformat()}_"
         f"raw{provider_limit}.json"
     )
+    legacy_v2_cache = ALPHAVANTAGE_CACHE / (
+        f"v2_{ticker}_{start_date.isoformat()}_{end_date.isoformat()}_"
+        f"raw{provider_limit}.json"
+    )
 
     if cache_path.exists():
         data = json.loads(cache_path.read_text(encoding="utf-8"))
         _trace(
             f"Alpha Vantage cache HIT {ticker} {start_date}..{end_date} "
             f"raw_limit={provider_limit}"
+        )
+    elif legacy_v2_cache.exists():
+        data = json.loads(legacy_v2_cache.read_text(encoding="utf-8"))
+        cache_path.write_text(json.dumps(data), encoding="utf-8")
+        _trace(
+            f"Alpha Vantage cache MIGRATED v2->v3 {ticker} "
+            f"{start_date}..{end_date} raw_limit={provider_limit}"
         )
     else:
         params = {
