@@ -179,3 +179,20 @@ With `ChatOpenAI(use_responses_api=True)`, LangChain may expose
 plain string. `models.py::message_text()` normalizes every LLM response before
 it is placed in LangGraph state. This is required before string operations such
 as regex parsing or `.upper()`.
+
+
+## Salida en español
+
+La variante `openai.v1` solicita a todos los agentes que redacten sus análisis
+en español. Se mantienen en inglés únicamente los tokens de control que el
+código analiza de forma determinista, por ejemplo:
+
+```text
+ACTION=BUY
+VERDICT=APPROVED
+CONFIDENCE=72
+SIZE_PCT=2.0
+```
+
+Las explicaciones, tesis, argumentos Bull/Bear, crítica del Abogado del Diablo,
+veredicto de riesgo y racional del juez se generan en español.
