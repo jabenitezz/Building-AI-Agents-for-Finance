@@ -27,7 +27,7 @@ from point_in_time_data import fetch_next_session_open, resolve_trading_date
 CSV_FIELDS = [
     "generated_at_utc", "decision_date", "signal_cutoff", "next_rebalance_date", "ticker",
     "execution_rule", "execution_date", "execution_open_price",
-    "strategy_mode", "action", "confidence", "size_pct", "final_decision",
+    "strategy_mode", "position_semantics", "action", "confidence", "size_pct", "final_decision",
     "price_at_decision", "fundamentals_source", "fundamentals_filing_date",
     "fundamentals_report_period", "trailing_pe", "price_to_book",
     "return_on_equity", "profit_margin", "debt_to_equity", "current_ratio",
@@ -130,6 +130,7 @@ def _flatten(
         "execution_date": execution["execution_date"],
         "execution_open_price": execution["execution_open_price"],
         "strategy_mode": "long_only",
+        "position_semantics": "target_pct_total_nav_each_rebalance",
         "action": action,
         "confidence": confidence,
         "size_pct": size_pct,
@@ -226,7 +227,7 @@ def print_signal(result: dict[str, Any], row: dict[str, Any], show_reports: bool
     print("-" * 100)
     print(
         f"DECISIÓN EOD: {row['action']} | confianza={row['confidence']} | "
-        f"size={float(row['size_pct']):.1f}% | final={row['final_decision']}"
+        f"target_nav={float(row['size_pct']):.1f}% | final={row['final_decision']}"
     )
     print(
         f"EJECUCIÓN: {row['execution_rule']} | fecha={row['execution_date']} | "
@@ -262,6 +263,8 @@ def main() -> None:
     print(f"Llamadas LLM aprox: {runs * 6} (6 por comité)")
     print(f"CSV               : {args.output}")
     print("Nota              : señal al final del día; ejecución en la apertura de la siguiente sesión.")
+    print("Sizing            : SIZE_PCT es posición OBJETIVO sobre NAV total, no compra incremental.")
+    print("Rebalanceo        : BUY -> target SIZE_PCT; HOLD/SELL -> target 0% long para el periodo siguiente.")
     print("Reanudación        : el CSV se escribe fila a fila y puede reanudarse.")
     print("=" * 100)
 
