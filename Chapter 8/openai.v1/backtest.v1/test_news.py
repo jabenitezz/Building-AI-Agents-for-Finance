@@ -16,7 +16,7 @@ if str(HERE) not in sys.path:
 load_dotenv(OPENAI_V1_ROOT / ".env")
 load_dotenv(HERE / ".env", override=False)
 
-from point_in_time_data import fetch_historical_news
+from point_in_time_data import fetch_historical_news, fetch_next_session_open
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,6 +62,18 @@ def main() -> None:
 
     if result.get("error"):
         raise SystemExit(2)
+
+    execution = fetch_next_session_open(
+        args.ticker.upper(),
+        date.fromisoformat(args.end),
+    )
+    print("-" * 100)
+    print(
+        "Ejecución  : "
+        f"{execution['execution_rule']} | "
+        f"{execution['execution_date']} | "
+        f"open={execution['execution_open_price']:.2f}"
+    )
 
 
 if __name__ == "__main__":
