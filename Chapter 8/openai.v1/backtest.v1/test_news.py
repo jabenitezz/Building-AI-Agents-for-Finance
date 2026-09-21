@@ -45,14 +45,18 @@ def main() -> None:
     print(f"Proveedor : {result.get('source')}")
     print(f"Ticker    : {args.ticker.upper()}")
     print(f"Ventana   : {args.start} -> {args.end}")
-    print(f"Titulares : {len(result.get('headlines') or [])}")
+    print(f"Raw       : {result.get('raw_count', 'N/D')}")
+    print(f"Umbral    : {result.get('relevance_threshold', 'N/D')}")
+    print(f"Filtradas : {result.get('filtered_out_count', 'N/D')}")
+    print(f"Relevantes: {len(result.get('headlines') or [])}")
     print(f"Error     : {result.get('error') or 'NINGUNO'}")
     print("-" * 100)
 
     for i, article in enumerate(result.get("articles") or [], start=1):
         print(
             f"{i:02d}. {article.get('time_published') or ''} | "
-            f"{article.get('source') or ''}\n"
+            f"{article.get('source') or ''} | "
+            f"relevance={article.get('ticker_relevance_score')}\n"
             f"    {article.get('title') or ''}"
         )
 
