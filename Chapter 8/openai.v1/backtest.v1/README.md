@@ -126,6 +126,12 @@ Para empezar desde cero:
 
     python "backtest.v1/generate_signals.py" --overwrite
 
+IMPORTANTE: después de la revisión de fidelidad con el `investment_committee.py`
+original, los CSV antiguos deben regenerarse. El motor exige
+`position_semantics=target_pct_total_nav_each_rebalance` y rechazará un CSV
+anterior para evitar mezclar la antigua interpretación incremental con la
+estrategia original.
+
 ## Salida a pantalla
 
 Para cada decisión verás la fecha histórica, filing 10-K usado, técnicos hasta esa fecha, ventana de noticias histórica, cuántos artículos fueron filtrados por relevancia, macro, decisión final y la fecha/precio de apertura de la siguiente sesión donde se ejecutaría la orden.
