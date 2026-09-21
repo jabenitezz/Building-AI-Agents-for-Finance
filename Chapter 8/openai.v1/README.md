@@ -148,3 +148,34 @@ The original warning still applies. The included backtest is a framework
 demonstration, not a research-grade point-in-time backtest. The committee
 fetchers use current fundamentals/news/macro data, so historical runs can leak
 future information.
+
+
+## Execution trace
+
+Tracing is enabled by default. Each script prints the stage, model tier, data
+collection step, and short result preview, for example:
+
+```text
+[TRACE][models] CREATE model=gpt-5.6-terra reasoning=medium max_tokens=1500
+[TRACE][committee] GRAPH: 4 analysts in parallel -> Portfolio Manager -> Risk Officer
+[TRACE][fundamentals] START ticker=TSLA -> fetching ratios
+[TRACE][technicals] START ticker=TSLA -> computing indicators
+[TRACE][sentiment] START ticker=TSLA -> fetching news
+[TRACE][macro] START -> fetching macro snapshot
+[TRACE][portfolio_manager] START -> synthesizing fundamentals + technicals + sentiment + macro
+[TRACE][risk_officer] START ticker=TSLA -> deterministic checks
+```
+
+Disable it when desired:
+
+```bash
+OPENAI_V1_TRACE=0 python investment_committee.py
+```
+
+### Responses API output normalization
+
+With `ChatOpenAI(use_responses_api=True)`, LangChain may expose
+`AIMessage.content` as a list of structured response blocks rather than as a
+plain string. `models.py::message_text()` normalizes every LLM response before
+it is placed in LangGraph state. This is required before string operations such
+as regex parsing or `.upper()`.
