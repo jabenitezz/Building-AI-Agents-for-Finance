@@ -35,6 +35,24 @@ SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 ALPHAVANTAGE_URL = "https://www.alphavantage.co/query"
 
+# Deterministic lexical aliases used to reject stories where a ticker is only
+# tangentially tagged by the provider. Product aliases are intentionally
+# specific; broad terms such as "AI" or "cloud" are excluded.
+NEWS_ALIASES: dict[str, tuple[str, ...]] = {
+    "NVDA": (
+        "nvidia", "nvda", "geforce", "cuda", "blackwell", "hopper",
+        "b200", "gb200", "h200", "h100",
+    ),
+    "MSFT": (
+        "microsoft", "msft", "azure", "windows", "office 365",
+        "microsoft 365", "github copilot", "xbox",
+    ),
+    "TSLA": (
+        "tesla", "tsla", "cybertruck", "model 3", "model y", "model s",
+        "model x", "supercharger", "full self-driving", "optimus",
+    ),
+}
+
 
 def _trace(message: str) -> None:
     print(f"[PIT-DATA] {message}", flush=True)
@@ -606,6 +624,45 @@ def _ticker_sentiment_for(article: dict[str, Any], ticker: str) -> dict[str, Any
     return None
 
 
+def _matched_aliases(text: str, ticker: str) -> list[str]:
+    haystack = " ".join(str(text or "").casefold().split())
+    matches: list[str] = []
+    for alias in NEWS_ALIASES.get(ticker.upper(), (ticker.casefold(),)):
+        if alias.casefold() in haystack:
+            matches.append(alias)
+    return matches
+
+
+def _classify_news_directness(
+    article: dict[str, Any],
+    ticker: str,
+    provider_relevance: float,
+    title_min_relevance: float,
+    summary_min_relevance: float,
+) -> tuple[bool, str, list[str]]:
+    """Decide whether a provider-tagged article is direct enough for the ticker.
+
+    Rules:
+    - ticker/company/product alias in TITLE: accept from the normal relevance floor.
+    - alias only in SUMMARY: require a much higher provider relevance score.
+    - no deterministic alias in either: reject, even if provider relevance is high.
+
+    This deliberately favors precision over recall for backtesting: a missing
+    sentiment item is safer than injecting unrelated news into a historical signal.
+    """
+    title_matches = _matched_aliases(str(article.get("title") or ""), ticker)
+    if title_matches and provider_relevance >= title_min_relevance:
+        return True, "title_match", title_matches
+
+    summary_matches = _matched_aliases(str(article.get("summary") or ""), ticker)
+    if summary_matches and provider_relevance >= summary_min_relevance:
+        return True, "summary_match_high_relevance", summary_matches
+
+    if title_matches or summary_matches:
+        return False, "alias_match_but_relevance_too_low", title_matches + summary_matches
+    return False, "no_ticker_alias", []
+
+
 def fetch_historical_news(
     ticker: str,
     start_date: date,
@@ -614,15 +671,17 @@ def fetch_historical_news(
 ) -> dict[str, Any]:
     """Historical ticker news from Alpha Vantage NEWS_SENTIMENT.
 
-    We request a wider raw candidate set, then require a minimum Alpha Vantage
-    ticker relevance score before a headline is allowed into the LLM prompt.
-    This removes articles where NVDA/MSFT/TSLA are only tangentially mentioned.
-
-    Successful provider responses are cached by ticker/window/provider-limit.
+    Provider relevance alone is not trusted. We inspect all raw candidates,
+    require a deterministic ticker/company/product alias in title or summary,
+    apply a stricter threshold to summary-only matches, rank the surviving
+    candidates, and only then keep the best `max_records` items.
     """
     ticker = ticker.upper()
-    min_relevance = float(
+    title_min_relevance = float(
         os.getenv("ALPHAVANTAGE_MIN_RELEVANCE_SCORE", "0.20")
+    )
+    summary_min_relevance = float(
+        os.getenv("ALPHAVANTAGE_SUMMARY_ONLY_MIN_RELEVANCE_SCORE", "0.70")
     )
     provider_limit = max(
         max_records,
@@ -630,10 +689,10 @@ def fetch_historical_news(
     )
     provider_limit = min(provider_limit, 1000)
 
-    # Versioned cache name so the previous unfiltered 12-item cache is not
-    # accidentally reused after introducing relevance filtering.
+    # v3 changes only local filtering/ranking; the raw provider payload is still
+    # safe to cache independently of the thresholds used on a given run.
     cache_path = ALPHAVANTAGE_CACHE / (
-        f"v2_{ticker}_{start_date.isoformat()}_{end_date.isoformat()}_"
+        f"v3_{ticker}_{start_date.isoformat()}_{end_date.isoformat()}_"
         f"raw{provider_limit}.json"
     )
 
@@ -673,13 +732,14 @@ def fetch_historical_news(
                 "headlines": [],
                 "articles": [],
                 "raw_count": 0,
+                "eligible_count": 0,
                 "relevant_count": 0,
                 "filtered_out_count": 0,
-                "relevance_threshold": min_relevance,
+                "title_relevance_threshold": title_min_relevance,
+                "summary_relevance_threshold": summary_min_relevance,
                 "error": error_text,
             }
 
-        # Alpha Vantage can return HTTP 200 with a service/rate-limit message.
         api_error = (
             data.get("Error Message")
             or data.get("Note")
@@ -698,9 +758,11 @@ def fetch_historical_news(
                 "headlines": [],
                 "articles": [],
                 "raw_count": 0,
+                "eligible_count": 0,
                 "relevant_count": 0,
                 "filtered_out_count": 0,
-                "relevance_threshold": min_relevance,
+                "title_relevance_threshold": title_min_relevance,
+                "summary_relevance_threshold": summary_min_relevance,
                 "error": error_text,
             }
 
@@ -717,46 +779,56 @@ def fetch_historical_news(
                 "headlines": [],
                 "articles": [],
                 "raw_count": 0,
+                "eligible_count": 0,
                 "relevant_count": 0,
                 "filtered_out_count": 0,
-                "relevance_threshold": min_relevance,
+                "title_relevance_threshold": title_min_relevance,
+                "summary_relevance_threshold": summary_min_relevance,
                 "error": error_text,
             }
 
         cache_path.write_text(json.dumps(data), encoding="utf-8")
-
         delay = float(os.getenv("ALPHAVANTAGE_REQUEST_DELAY_SECONDS", "1.0"))
         if delay > 0:
             time.sleep(delay)
 
     feed = data.get("feed") or []
     raw_count = len(feed)
-    cleaned: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
-    filtered_out = 0
+    rejected_count = 0
+    duplicate_or_empty_count = 0
 
     for article in feed:
         title = str(article.get("title") or "").strip()
-        if not title or title.lower() in seen:
+        if not title or title.casefold() in seen:
+            duplicate_or_empty_count += 1
             continue
+        seen.add(title.casefold())
 
         ticker_meta = _ticker_sentiment_for(article, ticker)
         try:
-            relevance = float(
+            provider_relevance = float(
                 ticker_meta.get("relevance_score")
                 if ticker_meta is not None
                 else 0.0
             )
         except (TypeError, ValueError):
-            relevance = 0.0
+            provider_relevance = 0.0
 
-        if ticker_meta is None or relevance < min_relevance:
-            filtered_out += 1
+        accepted, match_scope, matched_aliases = _classify_news_directness(
+            article,
+            ticker,
+            provider_relevance,
+            title_min_relevance,
+            summary_min_relevance,
+        )
+        if not accepted:
+            rejected_count += 1
             continue
 
-        seen.add(title.lower())
         published = str(article.get("time_published") or "").strip()
-        cleaned.append({
+        candidates.append({
             "title": title,
             "url": article.get("url"),
             "source": article.get("source"),
@@ -764,31 +836,54 @@ def fetch_historical_news(
             "time_published": published,
             "summary": article.get("summary"),
             "authors": article.get("authors") or [],
-            "ticker_relevance_score": relevance,
-            # Provider sentiment is saved for audit but intentionally NOT
-            # injected into our LLM sentiment prompt.
+            "ticker_relevance_score": provider_relevance,
+            "match_scope": match_scope,
+            "matched_aliases": matched_aliases,
+            # Provider sentiment is stored for audit only and is NOT passed as
+            # a sentiment label to our LLM agent.
             "provider_ticker_sentiment_score": (
                 ticker_meta.get("ticker_sentiment_score")
+                if ticker_meta else None
             ),
             "provider_ticker_sentiment_label": (
                 ticker_meta.get("ticker_sentiment_label")
+                if ticker_meta else None
             ),
         })
-        if len(cleaned) >= max_records:
-            break
+
+    # Prefer direct title matches over summary-only matches, then provider
+    # relevance, then recency. Process ALL raw results before truncation so the
+    # audit counts are meaningful.
+    scope_rank = {
+        "title_match": 2,
+        "summary_match_high_relevance": 1,
+    }
+    candidates.sort(
+        key=lambda a: (
+            scope_rank.get(str(a.get("match_scope")), 0),
+            float(a.get("ticker_relevance_score") or 0.0),
+            str(a.get("time_published") or ""),
+        ),
+        reverse=True,
+    )
+
+    eligible_count = len(candidates)
+    cleaned = candidates[:max_records]
 
     headlines = [
         (
             f"[{a.get('time_published') or ''}, {a.get('source') or ''}, "
-            f"relevance={a.get('ticker_relevance_score'):.3f}] {a['title']}"
+            f"relevance={a.get('ticker_relevance_score'):.3f}, "
+            f"match={a.get('match_scope')}] {a['title']}"
         )
         for a in cleaned
     ]
 
     _trace(
-        f"Alpha Vantage {ticker}: raw={raw_count} "
-        f"relevantes={len(cleaned)} filtradas={filtered_out} "
-        f"threshold={min_relevance:.2f}"
+        f"Alpha Vantage {ticker}: raw={raw_count} eligible={eligible_count} "
+        f"final={len(cleaned)} rejected={rejected_count} "
+        f"dup/empty={duplicate_or_empty_count} "
+        f"title_min={title_min_relevance:.2f} summary_min={summary_min_relevance:.2f}"
     )
 
     return {
@@ -798,9 +893,15 @@ def fetch_historical_news(
         "headlines": headlines,
         "articles": cleaned,
         "raw_count": raw_count,
+        "eligible_count": eligible_count,
         "relevant_count": len(cleaned),
-        "filtered_out_count": filtered_out,
-        "relevance_threshold": min_relevance,
+        "filtered_out_count": rejected_count,
+        "duplicate_or_empty_count": duplicate_or_empty_count,
+        "title_relevance_threshold": title_min_relevance,
+        "summary_relevance_threshold": summary_min_relevance,
+        # Backward-compatible field used by the CSV/console until the two
+        # thresholds are surfaced separately there.
+        "relevance_threshold": title_min_relevance,
         "error": None,
     }
 
