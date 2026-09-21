@@ -37,6 +37,8 @@ HAIKU_EQUIVALENT_MODEL = os.getenv(
 TRACE_ENABLED = os.getenv("OPENAI_V1_TRACE", "1").strip().lower() not in {
     "0", "false", "no", "off",
 }
+OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_V1_TIMEOUT_SECONDS", "180"))
+OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_V1_MAX_RETRIES", "2"))
 
 
 def trace(scope: str, message: str) -> None:
@@ -109,12 +111,18 @@ def _make_reasoning_model(
     effort: str,
 ) -> ChatOpenAI:
     """Create a GPT-5.6 model through the Responses API."""
-    trace("models", f"CREATE model={model} reasoning={effort} max_tokens={max_tokens}")
+    trace(
+        "models",
+        f"CREATE model={model} reasoning={effort} max_tokens={max_tokens} "
+        f"timeout={OPENAI_TIMEOUT_SECONDS:.0f}s retries={OPENAI_MAX_RETRIES}",
+    )
     return ChatOpenAI(
         model=model,
         max_tokens=max_tokens,
         use_responses_api=True,
         reasoning={"effort": effort},
+        timeout=OPENAI_TIMEOUT_SECONDS,
+        max_retries=OPENAI_MAX_RETRIES,
     )
 
 
