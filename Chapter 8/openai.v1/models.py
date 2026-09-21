@@ -56,16 +56,11 @@ def message_text(message: Any) -> str:
     if message is None:
         return ""
 
-    # LangChain AIMessage exposes a text() helper in current versions.
+    # Current LangChain exposes AIMessage.text as a PROPERTY.
+    # Do not call message.text(): that form is deprecated and emits
+    # LangChainDeprecationWarning.
     text_attr = getattr(message, "text", None)
-    if callable(text_attr):
-        try:
-            value = text_attr()
-            if isinstance(value, str) and value:
-                return value
-        except Exception:
-            pass
-    elif isinstance(text_attr, str) and text_attr:
+    if isinstance(text_attr, str) and text_attr:
         return text_attr
 
     content = getattr(message, "content", message)
