@@ -33,6 +33,7 @@ import pandas as pd
 import yfinance as yf
 
 from investment_committee import run_committee
+from models import trace
 
 
 # ---------------------------------------------------------------------------
@@ -102,8 +103,13 @@ def walk_forward(
     rebalance_freq: str = "W-FRI",     # weekly, Friday close
 ) -> list[Trade]:
     rebalance_dates = pd.date_range(start, end, freq=rebalance_freq)
+    trace(
+        "backtest",
+        f"START universe={universe} window={start}..{end} freq={rebalance_freq}",
+    )
 
     # Pre-fetch all price history once so we can look up entry/exit prices.
+    trace("backtest", "Fetching historical prices for all tickers")
     prices = {
         t: yf.Ticker(t).history(start=start, end=end)["Close"]
         for t in universe
@@ -112,12 +118,22 @@ def walk_forward(
     trades: list[Trade] = []
     for i, decision_date in enumerate(rebalance_dates[:-1]):
         exit_date = rebalance_dates[i + 1]
+        trace(
+            "backtest",
+            f"PERIOD {decision_date.date()} -> {exit_date.date()}",
+        )
         for ticker in universe:
+            trace("backtest", f"Running committee for {ticker}")
             # NOTE: run_committee uses LIVE data. See module docstring for
             # the point-in-time refactor that turns this into a real backtest.
             result = run_committee(ticker)
             action, confidence, size_pct = parse_decision(result)
+            trace(
+                "backtest",
+                f"{ticker}: action={action} confidence={confidence} size={size_pct:.1f}%",
+            )
             if action == "HOLD" or size_pct == 0.0:
+                trace("backtest", f"{ticker}: no trade")
                 continue
 
             entry = _price_on_or_before(prices[ticker], decision_date)
@@ -130,6 +146,11 @@ def walk_forward(
                 action=action, size_pct=size_pct, confidence=confidence,
                 entry_price=entry, exit_date=exit_date, exit_price=exit_,
             ))
+            trace(
+                "backtest",
+                f"{ticker}: TRADE {action} entry={entry:.2f} exit={exit_:.2f}",
+            )
+    trace("backtest", f"END trades={len(trades)}")
     return trades
 
 
