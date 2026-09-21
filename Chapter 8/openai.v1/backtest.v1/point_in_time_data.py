@@ -81,6 +81,39 @@ def resolve_trading_date(
     return df.index[-1].date()
 
 
+def fetch_next_session_open(
+    ticker: str,
+    after_date: date,
+    lookahead_days: int = 14,
+) -> dict[str, Any]:
+    """Return the first tradable session strictly AFTER after_date.
+
+    The signal is assumed to be created after all information from
+    `after_date` has been observed. Executing at the next session open avoids
+    using late same-day news together with the same day's closing price.
+    """
+    start = after_date + timedelta(days=1)
+    end = after_date + timedelta(days=lookahead_days)
+    df = _history(ticker, start, end)
+    if df.empty or "Open" not in df:
+        raise RuntimeError(
+            f"No se encontró una apertura posterior para {ticker} después de {after_date}."
+        )
+
+    valid = df["Open"].dropna()
+    if valid.empty:
+        raise RuntimeError(
+            f"No hay precios de apertura válidos para {ticker} después de {after_date}."
+        )
+
+    first_ts = valid.index[0]
+    return {
+        "execution_date": first_ts.date().isoformat(),
+        "execution_open_price": float(valid.iloc[0]),
+        "execution_rule": "next_session_open",
+    }
+
+
 def fetch_technicals(ticker: str, as_of_date: date) -> dict[str, Any]:
     """Historical technical snapshot using only closes available by as_of_date."""
     df = _history(ticker, as_of_date - timedelta(days=450), as_of_date)
@@ -581,18 +614,35 @@ def fetch_historical_news(
 ) -> dict[str, Any]:
     """Historical ticker news from Alpha Vantage NEWS_SENTIMENT.
 
-    Alpha Vantage accepts time_from/time_to in YYYYMMDDTHHMM and ticker
-    filtering natively. Successful responses are cached by ticker/window so a
-    rerun of the backtest does not consume another API request.
+    We request a wider raw candidate set, then require a minimum Alpha Vantage
+    ticker relevance score before a headline is allowed into the LLM prompt.
+    This removes articles where NVDA/MSFT/TSLA are only tangentially mentioned.
+
+    Successful provider responses are cached by ticker/window/provider-limit.
     """
     ticker = ticker.upper()
+    min_relevance = float(
+        os.getenv("ALPHAVANTAGE_MIN_RELEVANCE_SCORE", "0.20")
+    )
+    provider_limit = max(
+        max_records,
+        int(os.getenv("ALPHAVANTAGE_PROVIDER_NEWS_LIMIT", "50")),
+    )
+    provider_limit = min(provider_limit, 1000)
+
+    # Versioned cache name so the previous unfiltered 12-item cache is not
+    # accidentally reused after introducing relevance filtering.
     cache_path = ALPHAVANTAGE_CACHE / (
-        f"{ticker}_{start_date.isoformat()}_{end_date.isoformat()}_{max_records}.json"
+        f"v2_{ticker}_{start_date.isoformat()}_{end_date.isoformat()}_"
+        f"raw{provider_limit}.json"
     )
 
     if cache_path.exists():
         data = json.loads(cache_path.read_text(encoding="utf-8"))
-        _trace(f"Alpha Vantage cache HIT {ticker} {start_date}..{end_date}")
+        _trace(
+            f"Alpha Vantage cache HIT {ticker} {start_date}..{end_date} "
+            f"raw_limit={provider_limit}"
+        )
     else:
         params = {
             "function": "NEWS_SENTIMENT",
@@ -600,7 +650,7 @@ def fetch_historical_news(
             "time_from": start_date.strftime("%Y%m%dT0000"),
             "time_to": end_date.strftime("%Y%m%dT2359"),
             "sort": "RELEVANCE",
-            "limit": max_records,
+            "limit": provider_limit,
             "apikey": _alphavantage_api_key(),
         }
 
@@ -622,6 +672,10 @@ def fetch_historical_news(
                 "window_end": end_date.isoformat(),
                 "headlines": [],
                 "articles": [],
+                "raw_count": 0,
+                "relevant_count": 0,
+                "filtered_out_count": 0,
+                "relevance_threshold": min_relevance,
                 "error": error_text,
             }
 
@@ -643,6 +697,10 @@ def fetch_historical_news(
                 "window_end": end_date.isoformat(),
                 "headlines": [],
                 "articles": [],
+                "raw_count": 0,
+                "relevant_count": 0,
+                "filtered_out_count": 0,
+                "relevance_threshold": min_relevance,
                 "error": error_text,
             }
 
@@ -658,29 +716,46 @@ def fetch_historical_news(
                 "window_end": end_date.isoformat(),
                 "headlines": [],
                 "articles": [],
+                "raw_count": 0,
+                "relevant_count": 0,
+                "filtered_out_count": 0,
+                "relevance_threshold": min_relevance,
                 "error": error_text,
             }
 
         cache_path.write_text(json.dumps(data), encoding="utf-8")
 
-        # Keep requests gentle even though normal runs are well below the daily
-        # allowance. Cached reruns do not sleep.
         delay = float(os.getenv("ALPHAVANTAGE_REQUEST_DELAY_SECONDS", "1.0"))
         if delay > 0:
             time.sleep(delay)
 
     feed = data.get("feed") or []
+    raw_count = len(feed)
     cleaned: list[dict[str, Any]] = []
     seen: set[str] = set()
+    filtered_out = 0
 
     for article in feed:
         title = str(article.get("title") or "").strip()
         if not title or title.lower() in seen:
             continue
-        seen.add(title.lower())
 
-        published = str(article.get("time_published") or "").strip()
         ticker_meta = _ticker_sentiment_for(article, ticker)
+        try:
+            relevance = float(
+                ticker_meta.get("relevance_score")
+                if ticker_meta is not None
+                else 0.0
+            )
+        except (TypeError, ValueError):
+            relevance = 0.0
+
+        if ticker_meta is None or relevance < min_relevance:
+            filtered_out += 1
+            continue
+
+        seen.add(title.lower())
+        published = str(article.get("time_published") or "").strip()
         cleaned.append({
             "title": title,
             "url": article.get("url"),
@@ -689,30 +764,43 @@ def fetch_historical_news(
             "time_published": published,
             "summary": article.get("summary"),
             "authors": article.get("authors") or [],
-            # Audit metadata only; not injected into the sentiment prompt.
-            "ticker_relevance_score": (
-                ticker_meta.get("relevance_score") if ticker_meta else None
-            ),
+            "ticker_relevance_score": relevance,
+            # Provider sentiment is saved for audit but intentionally NOT
+            # injected into our LLM sentiment prompt.
             "provider_ticker_sentiment_score": (
-                ticker_meta.get("ticker_sentiment_score") if ticker_meta else None
+                ticker_meta.get("ticker_sentiment_score")
             ),
             "provider_ticker_sentiment_label": (
-                ticker_meta.get("ticker_sentiment_label") if ticker_meta else None
+                ticker_meta.get("ticker_sentiment_label")
             ),
         })
         if len(cleaned) >= max_records:
             break
 
     headlines = [
-        f"[{a.get('time_published') or ''}, {a.get('source') or ''}] {a['title']}"
+        (
+            f"[{a.get('time_published') or ''}, {a.get('source') or ''}, "
+            f"relevance={a.get('ticker_relevance_score'):.3f}] {a['title']}"
+        )
         for a in cleaned
     ]
+
+    _trace(
+        f"Alpha Vantage {ticker}: raw={raw_count} "
+        f"relevantes={len(cleaned)} filtradas={filtered_out} "
+        f"threshold={min_relevance:.2f}"
+    )
+
     return {
         "source": "Alpha Vantage NEWS_SENTIMENT",
         "window_start": start_date.isoformat(),
         "window_end": end_date.isoformat(),
         "headlines": headlines,
         "articles": cleaned,
+        "raw_count": raw_count,
+        "relevant_count": len(cleaned),
+        "filtered_out_count": filtered_out,
+        "relevance_threshold": min_relevance,
         "error": None,
     }
 
