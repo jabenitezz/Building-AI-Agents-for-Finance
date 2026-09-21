@@ -1,10 +1,12 @@
 """Phase B: backtest signals.csv with VectorBT, without any LLM calls.
 
-Strategy semantics
-------------------
-- BUY  -> add size_pct of CURRENT portfolio value at execution open.
-- HOLD -> keep the current position unchanged.
-- SELL -> fully close the long position.
+Strategy semantics — faithful to Chapter 8/investment_committee.py
+-------------------------------------------------------------------
+- SIZE_PCT is the TARGET position as % of TOTAL PORTFOLIO NAV.
+- BUY  -> rebalance that ticker to target SIZE_PCT at execution open.
+- HOLD -> target 0% long exposure for the next holding period.
+- SELL -> target 0% long exposure for the next holding period (never short).
+- At every rebalance, the committee sets the next-period target from scratch.
 - Long-only, shared cash across all tickers.
 - Signals are generated EOD and executed at the recorded next-session open.
 
@@ -27,20 +29,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from numba import njit
-
 import vectorbt as vbt
-from vectorbt.portfolio import nb
-from vectorbt.portfolio.enums import Direction, NoOrder, SizeType
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_SIGNALS = HERE / "output" / "signals.csv"
 DEFAULT_OUTPUT_DIR = HERE / "output" / "backtest"
 
-
-ACTION_NONE = 0
-ACTION_BUY = 1
-ACTION_SELL = -1
 
 
 def parse_args() -> argparse.Namespace:
@@ -94,6 +88,7 @@ def load_signals(path: Path) -> pd.DataFrame:
         "action",
         "size_pct",
         "final_decision",
+        "position_semantics",
     }
     missing = sorted(required - set(df.columns))
     if missing:
@@ -108,6 +103,16 @@ def load_signals(path: Path) -> pd.DataFrame:
     df["execution_open_price"] = pd.to_numeric(
         df["execution_open_price"], errors="raise"
     )
+
+    expected_semantics = "target_pct_total_nav_each_rebalance"
+    bad_semantics = df["position_semantics"].astype(str).ne(expected_semantics)
+    if bad_semantics.any():
+        found = sorted(set(df.loc[bad_semantics, "position_semantics"].astype(str)))
+        raise ValueError(
+            "signals.csv no usa la semántica fiel al comité original. "
+            f"Esperado={expected_semantics!r}; encontrado={found}. "
+            "Regenera signals.csv con generate_signals.py --overwrite."
+        )
 
     invalid_actions = sorted(set(df["action"]) - {"BUY", "HOLD", "SELL"})
     if invalid_actions:
@@ -211,108 +216,39 @@ def validate_execution_prices(
             )
 
 
-def build_signal_arrays(
+def build_target_frames(
     signals: pd.DataFrame,
     index: pd.DatetimeIndex,
     tickers: list[str],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    actions = np.zeros((len(index), len(tickers)), dtype=np.int8)
-    pcts = np.zeros((len(index), len(tickers)), dtype=np.float64)
-    order_prices = np.full((len(index), len(tickers)), np.nan, dtype=np.float64)
+    open_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build target weights and exact execution prices for each rebalance.
 
-    row_lookup = {pd.Timestamp(d): i for i, d in enumerate(index)}
-    col_lookup = {ticker: j for j, ticker in enumerate(tickers)}
+    This mirrors the original Chapter 8 framework: every committee decision
+    defines the exposure for the NEXT holding period. BUY receives SIZE_PCT as
+    a target % of total NAV. HOLD and SELL both mean zero long exposure.
+    """
+    targets = pd.DataFrame(np.nan, index=index, columns=tickers, dtype=float)
+    order_prices = open_df.copy().astype(float)
 
     for row in signals.itertuples(index=False):
         d = pd.Timestamp(row.execution_date)
-        if d not in row_lookup:
+        ticker = str(row.ticker)
+        if d not in targets.index:
             raise RuntimeError(
-                f"execution_date {d.date()} de {row.ticker} no está en los precios."
+                f"execution_date {d.date()} de {ticker} no está en los precios."
             )
-        i = row_lookup[d]
-        j = col_lookup[row.ticker]
+        if ticker not in targets.columns:
+            raise RuntimeError(f"Ticker inesperado en signals.csv: {ticker}")
 
-        if row.action == "BUY":
-            actions[i, j] = ACTION_BUY
-            pcts[i, j] = float(row.size_pct) / 100.0
-        elif row.action == "SELL":
-            actions[i, j] = ACTION_SELL
-        else:
-            actions[i, j] = ACTION_NONE
+        target = float(row.size_pct) / 100.0 if row.action == "BUY" else 0.0
+        targets.at[d, ticker] = target
 
-        order_prices[i, j] = float(row.execution_open_price)
+        # Use the audited price captured when the signal was generated, rather
+        # than silently replacing it with a later Yahoo download.
+        order_prices.at[d, ticker] = float(row.execution_open_price)
 
-    return actions, pcts, order_prices
-
-
-@njit
-def _pre_segment_nb(c, actions, open_prices):
-    """Revalue at today's open and process SELL before BUY within shared cash."""
-    for col in range(c.from_col, c.to_col):
-        px = open_prices[c.i, col]
-        if not np.isnan(px):
-            c.last_val_price[col] = px
-
-    k = 0
-    # SELL first
-    for rel_col in range(c.group_len):
-        col = c.from_col + rel_col
-        if actions[c.i, col] == ACTION_SELL:
-            c.call_seq_now[k] = rel_col
-            k += 1
-    # HOLD/no-order second
-    for rel_col in range(c.group_len):
-        col = c.from_col + rel_col
-        if actions[c.i, col] == ACTION_NONE:
-            c.call_seq_now[k] = rel_col
-            k += 1
-    # BUY last
-    for rel_col in range(c.group_len):
-        col = c.from_col + rel_col
-        if actions[c.i, col] == ACTION_BUY:
-            c.call_seq_now[k] = rel_col
-            k += 1
-    return ()
-
-
-@njit
-def _mas_order_nb(c, actions, pcts, order_prices, fees, slippage):
-    action = actions[c.i, c.col]
-    if action == ACTION_NONE:
-        return NoOrder
-
-    price = order_prices[c.i, c.col]
-    if np.isnan(price) or price <= 0:
-        return NoOrder
-
-    if action == ACTION_SELL:
-        if c.position_now <= 0:
-            return NoOrder
-        return nb.close_position_nb(
-            price=price,
-            fees=fees,
-            slippage=slippage,
-            allow_partial=True,
-        )
-
-    pct = pcts[c.i, c.col]
-    if pct <= 0:
-        return NoOrder
-
-    # Incremental sizing: buy size_pct of current TOTAL portfolio value.
-    order_value = c.value_now * pct
-    if order_value <= 0:
-        return NoOrder
-
-    return nb.order_nb(
-        size=order_value,
-        price=price,
-        size_type=SizeType.Value,
-        direction=Direction.LongOnly,
-        fees=fees,
-        slippage=slippage,
-        allow_partial=True,
-    )
+    return targets, order_prices
 
 
 def build_mas_portfolio(
@@ -324,25 +260,25 @@ def build_mas_portfolio(
     slippage: float,
 ) -> vbt.Portfolio:
     tickers = list(close_df.columns)
-    actions, pcts, order_prices = build_signal_arrays(
-        signals, close_df.index, tickers
+    targets, order_prices = build_target_frames(
+        signals, close_df.index, tickers, open_df
     )
 
-    return vbt.Portfolio.from_order_func(
+    # TargetPercent is exactly the original PM contract:
+    # target position as a percentage of TOTAL PORTFOLIO NAV.
+    # call_seq="auto" lets VectorBT sell/reduce positions before funding buys.
+    return vbt.Portfolio.from_orders(
         close_df,
-        _mas_order_nb,
-        actions,
-        pcts,
-        order_prices,
-        float(fees),
-        float(slippage),
+        size=targets,
+        size_type="targetpercent",
+        direction="longonly",
+        price=order_prices,
         init_cash=initial_cash,
         cash_sharing=True,
         group_by=True,
-        row_wise=True,
-        update_value=True,
-        pre_segment_func_nb=_pre_segment_nb,
-        pre_segment_args=(actions, open_df.to_numpy(dtype=np.float64)),
+        call_seq="auto",
+        fees=fees,
+        slippage=slippage,
         freq="1D",
     )
 
@@ -612,9 +548,10 @@ def main() -> None:
     print(f"Capital inicial  : {args.initial_cash:,.2f}")
     print(f"Fees             : {args.fees_bps:.2f} bps")
     print(f"Slippage         : {args.slippage_bps:.2f} bps")
-    print("Semántica BUY    : añadir size_pct del valor TOTAL actual de cartera")
-    print("Semántica HOLD   : mantener")
-    print("Semántica SELL   : liquidar posición")
+    print("SIZE_PCT         : posición OBJETIVO como % del NAV TOTAL")
+    print("Semántica BUY    : rebalancear hasta SIZE_PCT objetivo")
+    print("Semántica HOLD   : objetivo 0% long para el siguiente periodo")
+    print("Semántica SELL   : objetivo 0% long; nunca abre short")
     print("=" * 100)
 
     fees = args.fees_bps / 10_000.0
@@ -717,6 +654,7 @@ def main() -> None:
             "decision_date",
             "execution_date",
             "ticker",
+            "position_semantics",
             "action",
             "confidence",
             "size_pct",
