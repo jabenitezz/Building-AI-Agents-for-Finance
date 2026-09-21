@@ -10,6 +10,38 @@ signals.csv -> cartera -> PnL -> Sharpe / drawdown / benchmarks
 
 El objetivo es que la fase B pueda ejecutarse muchas veces sin volver a pagar llamadas a modelos.
 
+## Fidelidad respecto al código original de Chapter 8
+
+La política de inversión NO se redefine en backtest.v1. La fuente de verdad es
+`Chapter 8/investment_committee.py`.
+
+Se conserva:
+
+    4 analistas en paralelo
+        -> Portfolio Manager
+        -> Risk Officer
+
+y, sobre todo, la semántica original del Portfolio Manager:
+
+    SIZE_PCT = posición OBJETIVO como % del NAV TOTAL
+
+Por tanto, en cada rebalanceo:
+
+    BUY  -> objetivo = SIZE_PCT
+    HOLD -> objetivo long = 0%
+    SELL -> objetivo long = 0% y nunca abre un short
+
+Cada señal define la exposición del siguiente periodo desde cero. Un BUY del
+1,5% seguido por un BUY del 1,0% significa rebalancear de 1,5% a 1,0%, no
+acumular hasta 2,5%.
+
+También se conserva la separación deliberada entre PM y Risk Officer: el PM
+puede proponer hasta 5% según convicción y NO debe anticipar la revisión
+posterior; el Risk Officer mantiene el límite firm-wide de 3% y puede vetar.
+
+La capa point-in-time solo sustituye las fuentes LIVE por datos disponibles en
+la fecha histórica. No debe cambiar la política de inversión.
+
 ## Diferencia frente a backtest.py original
 
 El backtest.py del capítulo recorre fechas históricas, pero llama al comité actual, que usa noticias, fundamentales, técnicos y macro actuales. Sirve como demostración de estructura, no como backtest point-in-time.
@@ -110,7 +142,8 @@ Incluye:
 - ticker
 - regla de ejecución, fecha de ejecución y precio de apertura de la siguiente sesión
 - BUY / HOLD / SELL
-- confianza y tamaño
+- `position_semantics=target_pct_total_nav_each_rebalance`
+- confianza y SIZE_PCT como target de NAV
 - precio en la fecha
 - fecha de filing SEC y periodo contable
 - P/E, P/B, ROE, margen, D/E, current ratio, crecimiento
@@ -141,11 +174,19 @@ El CSV guarda execution_date y execution_open_price para que el futuro motor de 
 
 ## Semántica long-only
 
-    BUY  = abrir/aumentar largo
-    HOLD = no añadir
-    SELL = salir/no mantener largo
+La semántica viene del `investment_committee.py` original:
 
-SELL NO significa abrir un short.
+    SIZE_PCT = target position as % of TOTAL PORTFOLIO NAV
+
+En cada rebalanceo:
+
+    BUY  = rebalancear hasta SIZE_PCT
+    HOLD = 0% de exposición long para el siguiente periodo
+    SELL = 0% de exposición long para el siguiente periodo
+
+SELL NO abre un short. HOLD tampoco conserva automáticamente una posición del
+periodo anterior: cada rebalanceo establece un nuevo target para el periodo
+siguiente.
 
 ## Fase B — backtest con VectorBT
 
@@ -153,13 +194,13 @@ El motor `run_backtest.py` consume exclusivamente `signals.csv`; no vuelve a inv
 
 Semántica de cartera:
 
-    BUY  = añadir size_pct del valor TOTAL actual de la cartera
-    HOLD = mantener la posición existente
-    SELL = liquidar completamente la posición larga
+    BUY  = target SIZE_PCT del NAV total
+    HOLD = target 0% long
+    SELL = target 0% long; nunca short
 
-Se utiliza una única bolsa de efectivo compartida entre todos los tickers y se respeta el `execution_open_price` ya guardado en el CSV. Cuando coinciden órdenes el mismo día, se procesan SELL antes de BUY.
+Se utiliza una única bolsa de efectivo compartida entre todos los tickers y se respeta el `execution_open_price` ya guardado en el CSV.
 
-La simulación usa VectorBT mediante `Portfolio.from_order_func()`, porque necesitamos sizing incremental dependiente del valor actual de cartera. VectorBT mantiene posiciones, cash, órdenes, comisiones, slippage y curva de equity.
+La simulación usa VectorBT mediante `Portfolio.from_orders(..., size_type="targetpercent")`. Esa modalidad expresa exactamente la regla original del PM: posición objetivo como porcentaje del valor total de cartera. `call_seq="auto"` permite reducir/vender posiciones antes de financiar nuevos BUY.
 
 Benchmarks incluidos:
 
