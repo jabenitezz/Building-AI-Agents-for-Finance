@@ -30,6 +30,8 @@ from investment_committee import run_committee
 from models import (
     make_opus_equivalent,
     make_sonnet_equivalent,
+    message_text,
+    trace,
 )
 
 
@@ -68,6 +70,7 @@ class DebateState(TypedDict):
 
 
 def bull_node(state: DebateState) -> dict:
+    trace("debate/bull", f"START ticker={state['ticker']} -> GPT-5.6 Sol")
     sys = SystemMessage(content=(
         "You are a BULL analyst. Construct the strongest possible case to ENTER a long "
         "position. Cite the strongest evidence from the committee thesis: catalysts, "
@@ -80,10 +83,13 @@ def bull_node(state: DebateState) -> dict:
         f"Committee decision: {state['committee_decision']}"
     ))
     out = bull_model.invoke([sys, msg])
-    return {"bull_case": out.content}
+    case = message_text(out)
+    trace("debate/bull", f"DONE chars={len(case)} preview={case[:140]!r}")
+    return {"bull_case": case}
 
 
 def bear_node(state: DebateState) -> dict:
+    trace("debate/bear", f"START ticker={state['ticker']} -> GPT-5.6 Terra")
     sys = SystemMessage(content=(
         "You are a BEAR analyst. Construct the strongest possible case AGAINST entering "
         "a long position. Surface risks the committee may have under-weighted: tail "
@@ -97,10 +103,13 @@ def bear_node(state: DebateState) -> dict:
         f"Committee decision: {state['committee_decision']}"
     ))
     out = bear_model.invoke([sys, msg])
-    return {"bear_case": out.content}
+    case = message_text(out)
+    trace("debate/bear", f"DONE chars={len(case)} preview={case[:140]!r}")
+    return {"bear_case": case}
 
 
 def devil_advocate(state: DebateState) -> dict:
+    trace("debate/devil", "START -> comparing Bull and Bear -> GPT-5.6 Terra")
     sys = SystemMessage(content=(
         "You are a Devil's Advocate. Identify the SINGLE weakest claim in the BULL case "
         "and the SINGLE weakest claim in the BEAR case, and explain in one sentence each "
@@ -110,7 +119,9 @@ def devil_advocate(state: DebateState) -> dict:
         f"BULL case:\n{state['bull_case']}\n\nBEAR case:\n{state['bear_case']}"
     ))
     out = devil_model.invoke([sys, msg])
-    return {"devil_critique": out.content}
+    critique = message_text(out)
+    trace("debate/devil", f"DONE chars={len(critique)} preview={critique[:140]!r}")
+    return {"devil_critique": critique}
 
 
 def _parse_verdict(text: str) -> str:
@@ -122,6 +133,7 @@ def _parse_verdict(text: str) -> str:
 
 
 def judge_node(state: DebateState) -> dict:
+    trace("debate/judge", "START -> final adjudication -> GPT-5.6 Terra")
     sys = SystemMessage(content=(
         "You are a NEUTRAL Judge. Weigh the bull case, the bear case, and the devil's "
         "critique. Issue a verdict that may differ from the committee's prior decision. "
@@ -135,7 +147,10 @@ def judge_node(state: DebateState) -> dict:
         f"Devil's critique:\n{state['devil_critique']}"
     ))
     out = judge_model.invoke([sys, msg])
-    return {"judge_verdict": out.content, "final_decision": _parse_verdict(out.content)}
+    verdict = message_text(out)
+    final = _parse_verdict(verdict)
+    trace("debate/judge", f"DONE final_decision={final} verdict={verdict!r}")
+    return {"judge_verdict": verdict, "final_decision": final}
 
 
 def build_debate():
@@ -157,7 +172,11 @@ def build_debate():
 
 def run_pipeline(ticker: str) -> dict:
     """Run the full pipeline: committee first, then debate on the committee output."""
+    trace("debate", f"START full pipeline ticker={ticker}")
+    trace("debate", "STAGE 1 -> investment committee")
     committee_result = run_committee(ticker)
+    trace("debate", f"STAGE 1 DONE committee={committee_result['final_decision']}")
+    trace("debate", "STAGE 2 -> Bull + Bear in parallel -> Devil -> Judge")
     initial: DebateState = {
         "ticker": ticker,
         "committee_thesis": committee_result["pm_thesis"],
@@ -169,6 +188,7 @@ def run_pipeline(ticker: str) -> dict:
         "final_decision": "",
     }
     debate_result = build_debate().invoke(initial)
+    trace("debate", f"END judge={debate_result['final_decision']}")
     return {"committee": committee_result, "debate": debate_result}
 
 
