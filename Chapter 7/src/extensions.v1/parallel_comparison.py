@@ -146,6 +146,8 @@ def _liquidity_score(metric: str, value: float | None) -> int | None:
         return 9 if value >= cfg["healthy"] else 4
 
     if metric == "Debt-to-Equity Ratio":
+        if value < 0:
+            return 3
         if cfg["healthy_low"] <= value <= cfg["healthy_high"]:
             return 9
         if value <= cfg["warning"]:
@@ -271,6 +273,26 @@ def print_comparison_table(results: list[dict[str, Any]]) -> None:
     print("TABLA COMPARATIVA — DATOS REALES MÁS RECIENTES DISPONIBLES")
     print("=" * 120)
     print(df.to_string(index=False))
+    print()
+
+    summary_rows = []
+    for result in successful:
+        summary_rows.append({
+            "Ticker": result["ticker"],
+            "Puntuación": (
+                f"{result['overall_score']:.2f}/10"
+                if result["overall_score"] is not None
+                else "N/D"
+            ),
+            "Fortalezas": ", ".join(result["strengths"]) or "Ninguna destacada",
+            "Debilidades": ", ".join(result["weaknesses"]) or "Ninguna grave",
+        })
+
+    summary_df = pd.DataFrame(summary_rows)
+    print("=" * 120)
+    print("RESUMEN DE FORTALEZAS Y DEBILIDADES")
+    print("=" * 120)
+    print(summary_df.to_string(index=False))
     print()
 
 
