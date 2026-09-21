@@ -681,7 +681,7 @@ def fetch_historical_news(
         os.getenv("ALPHAVANTAGE_MIN_RELEVANCE_SCORE", "0.20")
     )
     summary_min_relevance = float(
-        os.getenv("ALPHAVANTAGE_SUMMARY_ONLY_MIN_RELEVANCE_SCORE", "0.70")
+        os.getenv("ALPHAVANTAGE_SUMMARY_ONLY_MIN_RELEVANCE_SCORE", "0.85")
     )
     provider_limit = max(
         max_records,
@@ -805,10 +805,16 @@ def fetch_historical_news(
 
     feed = data.get("feed") or []
     raw_count = len(feed)
-    candidates: list[dict[str, Any]] = []
+    direct_candidates: list[dict[str, Any]] = []
+    summary_candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
     rejected_count = 0
     duplicate_or_empty_count = 0
+
+    direct_target = max(
+        1,
+        int(os.getenv("ALPHAVANTAGE_DIRECT_NEWS_TARGET", "5")),
+    )
 
     for article in feed:
         title = str(article.get("title") or "").strip()
@@ -839,7 +845,7 @@ def fetch_historical_news(
             continue
 
         published = str(article.get("time_published") or "").strip()
-        candidates.append({
+        cleaned_article = {
             "title": title,
             "url": article.get("url"),
             "source": article.get("source"),
@@ -860,26 +866,38 @@ def fetch_historical_news(
                 ticker_meta.get("ticker_sentiment_label")
                 if ticker_meta else None
             ),
-        })
+        }
 
-    # Prefer direct title matches over summary-only matches, then provider
-    # relevance, then recency. Process ALL raw results before truncation so the
-    # audit counts are meaningful.
-    scope_rank = {
-        "title_match": 2,
-        "summary_match_high_relevance": 1,
-    }
-    candidates.sort(
-        key=lambda a: (
-            scope_rank.get(str(a.get("match_scope")), 0),
-            float(a.get("ticker_relevance_score") or 0.0),
-            str(a.get("time_published") or ""),
-        ),
-        reverse=True,
-    )
+        if match_scope == "title_match":
+            direct_candidates.append(cleaned_article)
+        else:
+            summary_candidates.append(cleaned_article)
 
-    eligible_count = len(candidates)
-    cleaned = candidates[:max_records]
+    def _news_rank(article: dict[str, Any]) -> tuple[float, str]:
+        return (
+            float(article.get("ticker_relevance_score") or 0.0),
+            str(article.get("time_published") or ""),
+        )
+
+    direct_candidates.sort(key=_news_rank, reverse=True)
+    summary_candidates.sort(key=_news_rank, reverse=True)
+
+    # Title-first policy:
+    # - If we already have at least N direct title matches, use ONLY direct news.
+    # - Otherwise, keep all direct matches and use summary-only items merely to
+    #   fill the set up to N items (never to pad toward max_records).
+    if len(direct_candidates) >= direct_target:
+        cleaned = direct_candidates[:max_records]
+        fallback_used_count = 0
+    else:
+        needed = min(max_records, direct_target) - len(direct_candidates)
+        fallback = summary_candidates[:max(0, needed)]
+        cleaned = (direct_candidates + fallback)[:max_records]
+        fallback_used_count = len(fallback)
+
+    direct_count = len(direct_candidates)
+    summary_candidate_count = len(summary_candidates)
+    eligible_count = direct_count + summary_candidate_count
 
     headlines = [
         (
@@ -891,10 +909,11 @@ def fetch_historical_news(
     ]
 
     _trace(
-        f"Alpha Vantage {ticker}: raw={raw_count} eligible={eligible_count} "
-        f"final={len(cleaned)} rejected={rejected_count} "
-        f"dup/empty={duplicate_or_empty_count} "
-        f"title_min={title_min_relevance:.2f} summary_min={summary_min_relevance:.2f}"
+        f"Alpha Vantage {ticker}: raw={raw_count} direct={direct_count} "
+        f"summary_candidates={summary_candidate_count} final={len(cleaned)} "
+        f"fallback_used={fallback_used_count} rejected={rejected_count} "
+        f"dup/empty={duplicate_or_empty_count} title_min={title_min_relevance:.2f} "
+        f"summary_min={summary_min_relevance:.2f} direct_target={direct_target}"
     )
 
     return {
@@ -905,13 +924,15 @@ def fetch_historical_news(
         "articles": cleaned,
         "raw_count": raw_count,
         "eligible_count": eligible_count,
+        "direct_count": direct_count,
+        "summary_candidate_count": summary_candidate_count,
+        "fallback_used_count": fallback_used_count,
+        "direct_target": direct_target,
         "relevant_count": len(cleaned),
         "filtered_out_count": rejected_count,
         "duplicate_or_empty_count": duplicate_or_empty_count,
         "title_relevance_threshold": title_min_relevance,
         "summary_relevance_threshold": summary_min_relevance,
-        # Backward-compatible field used by the CSV/console until the two
-        # thresholds are surfaced separately there.
         "relevance_threshold": title_min_relevance,
         "error": None,
     }
