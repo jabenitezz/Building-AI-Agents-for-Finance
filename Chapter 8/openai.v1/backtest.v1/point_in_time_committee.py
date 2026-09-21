@@ -125,19 +125,38 @@ def sentiment_analyst(state: PITCommitteeState) -> dict:
     trace(
         "pit/sentiment",
         f"DATA source={data.get('source')} raw={data.get('raw_count')} "
-        f"headlines={len(headlines)} filtered={data.get('filtered_out_count')} "
-        f"threshold={data.get('relevance_threshold')}",
+        f"eligible={data.get('eligible_count')} final={len(headlines)} "
+        f"rejected={data.get('filtered_out_count')} "
+        f"title_min={data.get('title_relevance_threshold')} "
+        f"summary_min={data.get('summary_relevance_threshold')}",
     )
-    body = "\n- ".join(headlines) if headlines else "(sin titulares históricos disponibles)"
+
+    prompt_items: list[str] = []
+    for article in data.get("articles") or []:
+        summary = " ".join(str(article.get("summary") or "").split())
+        if len(summary) > 420:
+            summary = summary[:417] + "..."
+        prompt_items.append(
+            f"[{article.get('time_published') or ''}, "
+            f"{article.get('source') or ''}, "
+            f"relevance={article.get('ticker_relevance_score')}, "
+            f"match={article.get('match_scope')}] "
+            f"{article.get('title') or ''}"
+            + (f" | Resumen: {summary}" if summary else "")
+        )
+
+    body = "\n- ".join(prompt_items) if prompt_items else "(sin noticias históricas relevantes disponibles)"
     sys = SystemMessage(content=(
         "Eres un analista de sentimiento en un backtest histórico. Solo puedes usar "
-        "los titulares suministrados, todos acotados a la ventana indicada. Si no hay "
-        "titulares, dilo explícitamente y usa MIXED/insuficiente en vez de inventar "
-        "noticias. Escribe TODO en español, máximo 120 palabras. Concluye "
-        "POSITIVE / MIXED / NEGATIVE."
+        "las noticias suministradas, todas acotadas a la ventana indicada y filtradas "
+        "por relevancia directa para el ticker. Cada elemento puede incluir título y "
+        "un resumen breve. Si no hay noticias relevantes, dilo explícitamente y usa "
+        "MIXED/insuficiente en vez de inventar información. No utilices el sentimiento "
+        "calculado por el proveedor aunque exista en los datos de auditoría. Escribe "
+        "TODO en español, máximo 120 palabras. Concluye POSITIVE / MIXED / NEGATIVE."
     ))
     msg = HumanMessage(content=(
-        f"Ticker: {ticker}\nVentana histórica: {start}..{end}\nTitulares:\n- {body}"
+        f"Ticker: {ticker}\nVentana histórica: {start}..{end}\nNoticias filtradas:\n- {body}"
     ))
     out = fast_model.invoke([sys, msg])
     report = message_text(out)
