@@ -125,7 +125,9 @@ def sentiment_analyst(state: PITCommitteeState) -> dict:
     trace(
         "pit/sentiment",
         f"DATA source={data.get('source')} raw={data.get('raw_count')} "
-        f"eligible={data.get('eligible_count')} final={len(headlines)} "
+        f"direct={data.get('direct_count')} "
+        f"summary_candidates={data.get('summary_candidate_count')} "
+        f"fallback_used={data.get('fallback_used_count')} final={len(headlines)} "
         f"rejected={data.get('filtered_out_count')} "
         f"title_min={data.get('title_relevance_threshold')} "
         f"summary_min={data.get('summary_relevance_threshold')}",
