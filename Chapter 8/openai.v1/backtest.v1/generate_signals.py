@@ -21,18 +21,20 @@ load_dotenv(OPENAI_V1_ROOT / ".env")
 load_dotenv(HERE / ".env", override=False)
 
 from point_in_time_committee import parse_pm_decision, run_committee_as_of
-from point_in_time_data import resolve_trading_date
+from point_in_time_data import fetch_next_session_open, resolve_trading_date
 
 
 CSV_FIELDS = [
-    "generated_at_utc", "decision_date", "next_rebalance_date", "ticker",
+    "generated_at_utc", "decision_date", "signal_cutoff", "next_rebalance_date", "ticker",
+    "execution_rule", "execution_date", "execution_open_price",
     "strategy_mode", "action", "confidence", "size_pct", "final_decision",
     "price_at_decision", "fundamentals_source", "fundamentals_filing_date",
     "fundamentals_report_period", "trailing_pe", "price_to_book",
     "return_on_equity", "profit_margin", "debt_to_equity", "current_ratio",
     "revenue_growth", "earnings_growth", "technical_data_end", "sma_50",
     "sma_200", "rsi_14", "vol_30d_annualized", "news_source",
-    "news_window_start", "news_window_end", "news_count", "headlines_json",
+    "news_window_start", "news_window_end", "news_count", "news_raw_count",
+    "news_filtered_out_count", "news_relevance_threshold", "headlines_json",
     "macro_data_end", "vix", "us_10y_yield_pct", "spx_1m_return_pct",
     "fundamentals_json", "technicals_json", "macro_json",
     "fundamentals_report", "technicals_report", "sentiment_report",
@@ -100,7 +102,11 @@ def _append_row(path: Path, row: dict[str, Any]) -> None:
         writer.writerow(row)
 
 
-def _flatten(result: dict[str, Any], next_date: date | None) -> dict[str, Any]:
+def _flatten(
+    result: dict[str, Any],
+    next_date: date | None,
+    execution: dict[str, Any],
+) -> dict[str, Any]:
     f = result["fundamentals_data"]
     t = result["technicals_data"]
     s = result["sentiment_data"]
@@ -113,8 +119,12 @@ def _flatten(result: dict[str, Any], next_date: date | None) -> dict[str, Any]:
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "decision_date": result["as_of_date"],
+        "signal_cutoff": "end_of_calendar_day",
         "next_rebalance_date": next_date.isoformat() if next_date else "",
         "ticker": result["ticker"],
+        "execution_rule": execution["execution_rule"],
+        "execution_date": execution["execution_date"],
+        "execution_open_price": execution["execution_open_price"],
         "strategy_mode": "long_only",
         "action": action,
         "confidence": confidence,
@@ -141,6 +151,9 @@ def _flatten(result: dict[str, Any], next_date: date | None) -> dict[str, Any]:
         "news_window_start": s.get("window_start"),
         "news_window_end": s.get("window_end"),
         "news_count": len(s.get("headlines") or []),
+        "news_raw_count": s.get("raw_count"),
+        "news_filtered_out_count": s.get("filtered_out_count"),
+        "news_relevance_threshold": s.get("relevance_threshold"),
         "headlines_json": json.dumps(s.get("articles") or [], ensure_ascii=False),
         "macro_data_end": m.get("data_end"),
         "vix": m.get("vix"),
@@ -184,7 +197,9 @@ def print_signal(result: dict[str, Any], row: dict[str, Any], show_reports: bool
     print(
         "NOTICIAS "
         f"{s.get('window_start')}..{s.get('window_end')} | fuente={s.get('source')} | "
-        f"titulares={len(s.get('headlines') or [])}"
+        f"raw={s.get('raw_count', 'N/D')} | relevantes={len(s.get('headlines') or [])} | "
+        f"filtradas={s.get('filtered_out_count', 'N/D')} | "
+        f"umbral={s.get('relevance_threshold', 'N/D')}"
     )
     for i, headline in enumerate((s.get("headlines") or [])[:5], start=1):
         print(f"  {i}. {headline}")
@@ -195,8 +210,12 @@ def print_signal(result: dict[str, Any], row: dict[str, Any], show_reports: bool
     )
     print("-" * 100)
     print(
-        f"DECISIÓN: {row['action']} | confianza={row['confidence']} | "
+        f"DECISIÓN EOD: {row['action']} | confianza={row['confidence']} | "
         f"size={float(row['size_pct']):.1f}% | final={row['final_decision']}"
+    )
+    print(
+        f"EJECUCIÓN: {row['execution_rule']} | fecha={row['execution_date']} | "
+        f"open={_fmt_num(row['execution_open_price'])}"
     )
 
     if show_reports:
@@ -227,7 +246,8 @@ def main() -> None:
     print(f"Comités           : {runs}")
     print(f"Llamadas LLM aprox: {runs * 6} (6 por comité)")
     print(f"CSV               : {args.output}")
-    print("Nota              : el CSV se escribe fila a fila y puede reanudarse.")
+    print("Nota              : señal al final del día; ejecución en la apertura de la siguiente sesión.")
+    print("Reanudación        : el CSV se escribe fila a fila y puede reanudarse.")
     print("=" * 100)
 
     if args.plan_only:
@@ -259,7 +279,8 @@ def main() -> None:
                 continue
 
             result = run_committee_as_of(ticker, decision_date, news_start)
-            row = _flatten(result, next_date)
+            execution = fetch_next_session_open(ticker, decision_date)
+            row = _flatten(result, next_date, execution)
             print_signal(result, row, args.show_reports)
             _append_row(output, row)
             existing.add(key)
