@@ -19,7 +19,7 @@ backtest.v1 pasa una fecha histórica real a toda la capa de datos:
 - Técnicos: solo precios hasta as_of_date.
 - Macro: VIX, Treasury 10Y y S&P 500 hasta as_of_date.
 - Fundamentales: último 10-K SEC que YA estaba presentado en as_of_date.
-- Noticias: consulta GDELT acotada entre la fecha previa y as_of_date.
+- Noticias: Alpha Vantage NEWS_SENTIMENT filtrado por ticker y acotado entre la fecha previa y as_of_date.
 - Si la fuente histórica de noticias falla, NO se sustituye por noticias actuales.
 
 ## Por qué usamos datos anuales SEC
@@ -38,8 +38,11 @@ Necesitas:
 
     OPENAI_API_KEY=...
     SEC_EDGAR_EMAIL=tu-correo@dominio
+    ALPHAVANTAGE_API_KEY=tu-clave-alpha-vantage
 
 SEC_EDGAR_EMAIL no es una clave; se usa para un User-Agent responsable frente a SEC EDGAR.
+
+ALPHAVANTAGE_API_KEY se usa exclusivamente para NEWS_SENTIMENT histórico. La consulta se hace por ticker y con time_from/time_to; las respuestas correctas se guardan en cache/alphavantage_news para no repetir peticiones al reanudar.
 
 ## Primero: ver el plan sin gastar API
 
@@ -94,7 +97,7 @@ Incluye:
 - fecha de filing SEC y periodo contable
 - P/E, P/B, ROE, margen, D/E, current ratio, crecimiento
 - SMA50, SMA200, RSI, volatilidad
-- ventana histórica de noticias y titulares
+- proveedor, ventana histórica de noticias y titulares
 - VIX, Treasury 10Y y retorno mensual S&P
 - informes de los cuatro especialistas
 - tesis del Portfolio Manager
