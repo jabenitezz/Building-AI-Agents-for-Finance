@@ -16,6 +16,7 @@ benchmark-identical.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from langchain_openai import ChatOpenAI
 
@@ -32,6 +33,78 @@ HAIKU_EQUIVALENT_MODEL = os.getenv(
     "OPENAI_HAIKU_EQUIVALENT_MODEL",
     "gpt-5.6-luna",
 )
+
+TRACE_ENABLED = os.getenv("OPENAI_V1_TRACE", "1").strip().lower() not in {
+    "0", "false", "no", "off",
+}
+
+
+def trace(scope: str, message: str) -> None:
+    """Small stdout trace used by all Chapter 8 openai.v1 scripts."""
+    if TRACE_ENABLED:
+        print(f"[TRACE][{scope}] {message}", flush=True)
+
+
+def message_text(message: Any) -> str:
+    """Normalize LangChain/OpenAI Responses API message content to plain text.
+
+    With ChatOpenAI + Responses API, AIMessage.content may be a list of
+    structured content blocks instead of a single string. The original
+    Anthropic-oriented code assumed a string, which breaks calls such as
+    .upper(), regex parsing, and prompt interpolation.
+    """
+    if message is None:
+        return ""
+
+    # LangChain AIMessage exposes a text() helper in current versions.
+    text_attr = getattr(message, "text", None)
+    if callable(text_attr):
+        try:
+            value = text_attr()
+            if isinstance(value, str) and value:
+                return value
+        except Exception:
+            pass
+    elif isinstance(text_attr, str) and text_attr:
+        return text_attr
+
+    content = getattr(message, "content", message)
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+                continue
+
+            if isinstance(block, dict):
+                # Responses-style text/output_text blocks.
+                value = block.get("text")
+                if isinstance(value, str):
+                    parts.append(value)
+                    continue
+                if isinstance(value, dict):
+                    nested = value.get("value") or value.get("text")
+                    if isinstance(nested, str):
+                        parts.append(nested)
+                        continue
+
+                value = block.get("content")
+                if isinstance(value, str):
+                    parts.append(value)
+                continue
+
+            value = getattr(block, "text", None)
+            if isinstance(value, str):
+                parts.append(value)
+
+        if parts:
+            return "\n".join(parts)
+
+    return str(content)
 
 
 def _make_reasoning_model(
