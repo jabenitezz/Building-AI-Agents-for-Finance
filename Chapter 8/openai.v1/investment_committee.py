@@ -31,6 +31,8 @@ from models import (
     make_opus_equivalent,
     make_sonnet_equivalent,
     make_haiku_equivalent,
+    message_text,
+    trace,
 )
 
 # ---------------------------------------------------------------------------
@@ -183,7 +185,10 @@ def fetch_macro_snapshot() -> dict:
 # Nodes — each is a pure function `state -> partial_state_update`.
 # ---------------------------------------------------------------------------
 def fundamentals_analyst(state: CommitteeState) -> dict:
+    trace("fundamentals", f"START ticker={state['ticker']} -> fetching ratios")
     data = fetch_fundamentals(state["ticker"])
+    trace("fundamentals", f"DATA {data}")
+    trace("fundamentals", "LLM -> GPT-5.6 Terra")
     sys = SystemMessage(content=(
         "You are a senior equity fundamentals analyst. Given the ratios, write a SHORT "
         "report (max 150 words) covering: (1) valuation stance, (2) profitability, "
@@ -192,11 +197,16 @@ def fundamentals_analyst(state: CommitteeState) -> dict:
     ))
     msg = HumanMessage(content=f"Ticker: {state['ticker']}\nRatios: {data}")
     out = balanced_model.invoke([sys, msg])
-    return {"fundamentals_report": out.content}
+    report = message_text(out)
+    trace("fundamentals", f"DONE chars={len(report)} preview={report[:140]!r}")
+    return {"fundamentals_report": report}
 
 
 def technicals_analyst(state: CommitteeState) -> dict:
+    trace("technicals", f"START ticker={state['ticker']} -> computing indicators")
     ind = compute_indicators(state["ticker"])
+    trace("technicals", f"DATA {ind}")
+    trace("technicals", "LLM -> GPT-5.6 Terra")
     sys = SystemMessage(content=(
         "You are a technical analyst. Given price-derived indicators, write a SHORT "
         "report (max 120 words) on trend (price vs SMA50/SMA200), momentum (RSI), and "
@@ -204,11 +214,16 @@ def technicals_analyst(state: CommitteeState) -> dict:
     ))
     msg = HumanMessage(content=f"Ticker: {state['ticker']}\nIndicators: {ind}")
     out = balanced_model.invoke([sys, msg])
-    return {"technicals_report": out.content}
+    report = message_text(out)
+    trace("technicals", f"DONE chars={len(report)} preview={report[:140]!r}")
+    return {"technicals_report": report}
 
 
 def sentiment_analyst(state: CommitteeState) -> dict:
+    trace("sentiment", f"START ticker={state['ticker']} -> fetching news")
     headlines = fetch_news(state["ticker"])
+    trace("sentiment", f"DATA headlines={len(headlines)}")
+    trace("sentiment", "LLM -> GPT-5.6 Luna")
     body = "\n- ".join(headlines) if headlines else "(no headlines available)"
     sys = SystemMessage(content=(
         "You are a news sentiment analyst. Each line below is one article, already "
@@ -225,11 +240,16 @@ def sentiment_analyst(state: CommitteeState) -> dict:
     ))
     msg = HumanMessage(content=f"Ticker: {state['ticker']}\nHeadlines:\n- {body}")
     out = fast_model.invoke([sys, msg])
-    return {"sentiment_report": out.content}
+    report = message_text(out)
+    trace("sentiment", f"DONE chars={len(report)} preview={report[:140]!r}")
+    return {"sentiment_report": report}
 
 
 def macro_analyst(state: CommitteeState) -> dict:
+    trace("macro", "START -> fetching macro snapshot")
     macro = fetch_macro_snapshot()
+    trace("macro", f"DATA {macro}")
+    trace("macro", "LLM -> GPT-5.6 Terra")
     sys = SystemMessage(content=(
         "You are a macro strategist. Given a short macro snapshot, write a SHORT report "
         "(max 120 words) on the regime (risk-on / risk-off / neutral) and what it "
@@ -237,9 +257,16 @@ def macro_analyst(state: CommitteeState) -> dict:
     ))
     msg = HumanMessage(content=f"Macro snapshot: {macro}")
     out = balanced_model.invoke([sys, msg])
-    return {"macro_report": out.content}
+    report = message_text(out)
+    trace("macro", f"DONE chars={len(report)} preview={report[:140]!r}")
+    return {"macro_report": report}
 
 def portfolio_manager(state: CommitteeState) -> dict:
+    trace(
+        "portfolio_manager",
+        "START -> synthesizing fundamentals + technicals + sentiment + macro",
+    )
+    trace("portfolio_manager", "LLM -> GPT-5.6 Sol (high reasoning)")
     sys = SystemMessage(content=(
         "You are the Portfolio Manager. Synthesise the four analyst reports into a "
         "single thesis (max 250 words). End STRICTLY with one line of the form:\n"
@@ -269,7 +296,9 @@ def portfolio_manager(state: CommitteeState) -> dict:
         f"--- Macro ---\n{state['macro_report']}"
     ))
     out = premium_model.invoke([sys, msg])
-    return {"pm_thesis": out.content}
+    thesis = message_text(out)
+    trace("portfolio_manager", f"DONE chars={len(thesis)} preview={thesis[:180]!r}")
+    return {"pm_thesis": thesis}
 
 
 def _extract_action(thesis: str) -> str:
@@ -282,11 +311,14 @@ def _extract_action(thesis: str) -> str:
 
 
 def risk_officer(state: CommitteeState) -> dict:
+    trace("risk_officer", f"START ticker={state['ticker']} -> deterministic checks")
     ind = compute_indicators(state["ticker"])
     vol = ind["vol_30d_annualized"]
+    trace("risk_officer", f"30d annualized volatility={vol:.2%}" if vol is not None else "30d volatility=N/D")
 
     # Hard, deterministic rules — checked before any LLM call.
     if vol is not None and vol > 0.60:
+        trace("risk_officer", "HARD VETO -> volatility exceeds 60% ceiling")
         return {
             "risk_verdict": f"VETO: realized 30d vol {vol:.1%} exceeds 60% ceiling.",
             "final_decision": "HOLD (risk veto)",
@@ -302,12 +334,15 @@ def risk_officer(state: CommitteeState) -> dict:
     msg = HumanMessage(content=(
         f"PM thesis:\n{state['pm_thesis']}\n\nRealized 30d vol (ann.): {vol:.1%}"
     ))
+    trace("risk_officer", "LLM -> GPT-5.6 Sol (high reasoning)")
     out = premium_model.invoke([sys, msg])
-    verdict_text = out.content
+    verdict_text = message_text(out)
+    trace("risk_officer", f"LLM VERDICT {verdict_text!r}")
     if "REJECTED" in verdict_text.upper():
         final = "HOLD (risk rejected)"
     else:
         final = _extract_action(state["pm_thesis"])
+    trace("risk_officer", f"DONE final_decision={final}")
     return {"risk_verdict": verdict_text, "final_decision": final}
 
 
@@ -333,6 +368,11 @@ def build_committee():
 
 
 def run_committee(ticker: str) -> dict:
+    trace("committee", f"START ticker={ticker}")
+    trace(
+        "committee",
+        "GRAPH: 4 analysts in parallel -> Portfolio Manager -> Risk Officer",
+    )
     initial: CommitteeState = {
         "ticker": ticker,
         "fundamentals_report": "",
@@ -343,7 +383,9 @@ def run_committee(ticker: str) -> dict:
         "risk_verdict": "",
         "final_decision": "",
     }
-    return build_committee().invoke(initial)
+    result = build_committee().invoke(initial)
+    trace("committee", f"END ticker={ticker} final={result['final_decision']}")
+    return result
 
 
 if __name__ == "__main__":
