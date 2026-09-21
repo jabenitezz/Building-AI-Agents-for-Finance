@@ -27,7 +27,9 @@ import yfinance as yf
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 SEC_CACHE = CACHE_DIR / "sec"
+GDELT_CACHE = CACHE_DIR / "gdelt"
 SEC_CACHE.mkdir(parents=True, exist_ok=True)
+GDELT_CACHE.mkdir(parents=True, exist_ok=True)
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
@@ -207,21 +209,21 @@ def _company_facts(ticker: str) -> dict[str, Any]:
     )
 
 
-def _concept_units(
+def _concept_entries(
     facts: dict[str, Any],
-    concepts: list[tuple[str, str]],
+    namespace: str,
+    concept: str,
 ) -> list[dict[str, Any]]:
-    root = facts.get("facts", {})
-    for namespace, concept in concepts:
-        node = root.get(namespace, {}).get(concept)
-        if not node:
-            continue
-        units = node.get("units", {})
-        for unit in ("USD", "USD/shares", "shares"):
-            if unit in units:
-                return list(units[unit])
-        if units:
-            return list(next(iter(units.values())))
+    """Return SEC Company Facts entries for one exact taxonomy concept."""
+    node = facts.get("facts", {}).get(namespace, {}).get(concept)
+    if not node:
+        return []
+    units = node.get("units", {})
+    for unit in ("USD", "USD/shares", "shares"):
+        if unit in units:
+            return list(units[unit])
+    if units:
+        return list(next(iter(units.values())))
     return []
 
 
@@ -268,6 +270,86 @@ def _annual_flow_records(
     return sorted(best.values(), key=lambda x: str(x["end"]), reverse=True)
 
 
+def _best_annual_series(
+    facts: dict[str, Any],
+    concepts: list[tuple[str, str]],
+    as_of_date: date,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Choose the concept whose available annual series has the newest period.
+
+    SEC taxonomy concepts can change over time. Choosing the *first concept that
+    exists* can silently select a stale series (this happened with NVDA, where a
+    legacy revenue concept ended in 2022 although newer annual facts existed
+    under another concept).
+    """
+    best_records: list[dict[str, Any]] = []
+    best_name: str | None = None
+    best_key = ("", "")
+    for namespace, concept in concepts:
+        records = _annual_flow_records(
+            _concept_entries(facts, namespace, concept),
+            as_of_date,
+        )
+        if not records:
+            continue
+        key = (str(records[0].get("end", "")), str(records[0].get("filed", "")))
+        if key > best_key:
+            best_records = records
+            best_name = f"{namespace}:{concept}"
+            best_key = key
+    return best_records, best_name
+
+
+def _record_for_end(
+    records: list[dict[str, Any]],
+    period_end: str,
+) -> dict[str, Any] | None:
+    matches = [r for r in records if str(r.get("end")) == period_end]
+    if not matches:
+        return None
+    return max(matches, key=lambda r: str(r.get("filed", "")))
+
+
+def _prior_record(
+    records: list[dict[str, Any]],
+    period_end: str,
+) -> dict[str, Any] | None:
+    older = [r for r in records if str(r.get("end", "")) < period_end]
+    if not older:
+        return None
+    return max(older, key=lambda r: str(r.get("end", "")))
+
+
+def _best_instant_from_concepts(
+    facts: dict[str, Any],
+    concepts: list[tuple[str, str]],
+    as_of_date: date,
+    preferred_end: str | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Pick the newest matching instant fact across alternate SEC concepts."""
+    best_record: dict[str, Any] | None = None
+    best_name: str | None = None
+    best_key = ("", "")
+    for namespace, concept in concepts:
+        rec = _instant_record(
+            _concept_entries(facts, namespace, concept),
+            as_of_date,
+            preferred_end,
+        )
+        if rec is None:
+            continue
+        # With a preferred annual period, do not silently fall back to a
+        # different period: mixing fiscal years corrupts ratios.
+        if preferred_end is not None and str(rec.get("end")) != preferred_end:
+            continue
+        key = (str(rec.get("end", "")), str(rec.get("filed", "")))
+        if key > best_key:
+            best_record = rec
+            best_name = f"{namespace}:{concept}"
+            best_key = key
+    return best_record, best_name
+
+
 def _instant_record(
     entries: list[dict[str, Any]],
     as_of_date: date,
@@ -302,88 +384,162 @@ def _safe_div(a: float | None, b: float | None) -> float | None:
 
 
 def fetch_fundamentals(ticker: str, as_of_date: date, price: float) -> dict[str, Any]:
-    """Conservative point-in-time fundamentals from SEC annual filings."""
+    """Conservative point-in-time fundamentals from SEC annual filings.
+
+    All flow metrics are aligned to the SAME fiscal-year end. Alternate XBRL
+    concepts are selected by recency, not by taxonomy-list order.
+    """
     facts = _company_facts(ticker)
 
-    revenue_entries = _concept_units(facts, [
+    revenue_concepts = [
         ("us-gaap", "RevenueFromContractWithCustomerExcludingAssessedTax"),
         ("us-gaap", "Revenues"),
         ("us-gaap", "SalesRevenueNet"),
-    ])
-    net_income_entries = _concept_units(facts, [
+    ]
+    net_income_concepts = [
         ("us-gaap", "NetIncomeLoss"),
         ("us-gaap", "ProfitLoss"),
-    ])
-    eps_entries = _concept_units(facts, [
-        ("us-gaap", "EarningsPerShareDiluted"),
-    ])
-    equity_entries = _concept_units(facts, [
+    ]
+    eps_concepts = [("us-gaap", "EarningsPerShareDiluted")]
+    equity_concepts = [
         ("us-gaap", "StockholdersEquity"),
         ("us-gaap", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"),
-    ])
-    current_assets_entries = _concept_units(facts, [("us-gaap", "AssetsCurrent")])
-    current_liabilities_entries = _concept_units(facts, [("us-gaap", "LiabilitiesCurrent")])
-    debt_noncurrent_entries = _concept_units(facts, [
+    ]
+    current_assets_concepts = [("us-gaap", "AssetsCurrent")]
+    current_liabilities_concepts = [("us-gaap", "LiabilitiesCurrent")]
+    debt_noncurrent_concepts = [
         ("us-gaap", "LongTermDebtNoncurrent"),
         ("us-gaap", "LongTermDebtAndFinanceLeaseObligationsNoncurrent"),
-    ])
-    debt_current_entries = _concept_units(facts, [
+    ]
+    debt_current_concepts = [
         ("us-gaap", "LongTermDebtCurrent"),
         ("us-gaap", "LongTermDebtAndFinanceLeaseObligationsCurrent"),
         ("us-gaap", "CurrentPortionOfLongTermDebt"),
-    ])
-    shares_entries = _concept_units(facts, [
+    ]
+    shares_concepts = [
         ("dei", "EntityCommonStockSharesOutstanding"),
         ("us-gaap", "CommonStockSharesOutstanding"),
-    ])
+    ]
 
-    revenues = _annual_flow_records(revenue_entries, as_of_date)
-    earnings = _annual_flow_records(net_income_entries, as_of_date)
-    eps = _annual_flow_records(eps_entries, as_of_date)
+    revenues, revenue_concept = _best_annual_series(
+        facts, revenue_concepts, as_of_date
+    )
+    earnings, net_income_concept = _best_annual_series(
+        facts, net_income_concepts, as_of_date
+    )
+    eps, eps_concept = _best_annual_series(facts, eps_concepts, as_of_date)
 
     if not revenues or not earnings:
         raise RuntimeError(
             f"No hay suficientes datos anuales SEC point-in-time para {ticker} a {as_of_date}."
         )
 
-    rev0 = revenues[0]
-    ni0 = earnings[0]
-    period_end = str(rev0.get("end"))
-    filing_date = max(str(rev0.get("filed", "")), str(ni0.get("filed", "")))
+    # Revenue and net income MUST refer to the same fiscal year.
+    revenue_ends = {str(r.get("end")) for r in revenues}
+    earnings_ends = {str(r.get("end")) for r in earnings}
+    common_periods = sorted(revenue_ends & earnings_ends, reverse=True)
+    if not common_periods:
+        raise RuntimeError(
+            f"SEC sin periodo anual común de ingresos/beneficio para {ticker} a {as_of_date}."
+        )
+
+    period_end = common_periods[0]
+    rev0 = _record_for_end(revenues, period_end)
+    ni0 = _record_for_end(earnings, period_end)
+    eps0 = _record_for_end(eps, period_end) if eps else None
+    if rev0 is None or ni0 is None:
+        raise RuntimeError(
+            f"No se pudo alinear el periodo fiscal {period_end} para {ticker}."
+        )
+
+    period_end_date = _as_date(period_end)
+    age_days = (as_of_date - period_end_date).days
+    if age_days > 550:
+        raise RuntimeError(
+            f"Datos fundamentales SEC demasiado antiguos para {ticker}: "
+            f"periodo={period_end}, as_of={as_of_date}, antigüedad={age_days} días."
+        )
+
+    prior_rev = _prior_record(revenues, period_end)
+    prior_ni = _prior_record(earnings, period_end)
+
+    filing_dates = [
+        str(x.get("filed", ""))
+        for x in (rev0, ni0, eps0)
+        if x is not None and x.get("filed")
+    ]
+    filing_date = max(filing_dates) if filing_dates else None
 
     revenue = _value(rev0)
     net_income = _value(ni0)
-    prior_revenue = _value(revenues[1]) if len(revenues) > 1 else None
-    prior_net_income = _value(earnings[1]) if len(earnings) > 1 else None
-    diluted_eps = _value(eps[0]) if eps else None
+    prior_revenue = _value(prior_rev)
+    prior_net_income = _value(prior_ni)
+    diluted_eps = _value(eps0)
 
-    equity = _value(_instant_record(equity_entries, as_of_date, period_end))
-    current_assets = _value(_instant_record(current_assets_entries, as_of_date, period_end))
-    current_liabilities = _value(_instant_record(current_liabilities_entries, as_of_date, period_end))
-    debt_noncurrent = _value(_instant_record(debt_noncurrent_entries, as_of_date, period_end)) or 0.0
-    debt_current = _value(_instant_record(debt_current_entries, as_of_date, period_end)) or 0.0
-    total_debt = debt_noncurrent + debt_current
+    equity_rec, equity_concept = _best_instant_from_concepts(
+        facts, equity_concepts, as_of_date, period_end
+    )
+    current_assets_rec, _ = _best_instant_from_concepts(
+        facts, current_assets_concepts, as_of_date, period_end
+    )
+    current_liabilities_rec, _ = _best_instant_from_concepts(
+        facts, current_liabilities_concepts, as_of_date, period_end
+    )
+    debt_noncurrent_rec, _ = _best_instant_from_concepts(
+        facts, debt_noncurrent_concepts, as_of_date, period_end
+    )
+    debt_current_rec, _ = _best_instant_from_concepts(
+        facts, debt_current_concepts, as_of_date, period_end
+    )
+    shares_rec, shares_concept = _best_instant_from_concepts(
+        facts, shares_concepts, as_of_date, None
+    )
 
-    shares_rec = _instant_record(shares_entries, as_of_date)
+    equity = _value(equity_rec)
+    current_assets = _value(current_assets_rec)
+    current_liabilities = _value(current_liabilities_rec)
+    debt_noncurrent = _value(debt_noncurrent_rec)
+    debt_current = _value(debt_current_rec)
+    if debt_noncurrent is None and debt_current is None:
+        total_debt = None
+    else:
+        total_debt = (debt_noncurrent or 0.0) + (debt_current or 0.0)
+
     shares = _value(shares_rec)
     market_cap = price * shares if shares else None
+
+    profit_margin = _safe_div(net_income, revenue)
+    roe = _safe_div(net_income, equity)
+
+    # Catch obvious cross-period/taxonomy corruption before an LLM sees it.
+    if profit_margin is not None and abs(profit_margin) > 1.5:
+        raise RuntimeError(
+            f"Margen fundamental no plausible para {ticker} ({profit_margin:.2%}); "
+            "se aborta para evitar contaminar el backtest."
+        )
 
     return {
         "ticker": ticker,
         "source": "SEC Company Facts (annual 10-K, point-in-time)",
-        "filing_date": filing_date or None,
+        "filing_date": filing_date,
         "report_period": period_end,
+        "report_age_days": age_days,
+        "revenue_concept": revenue_concept,
+        "net_income_concept": net_income_concept,
+        "eps_concept": eps_concept,
+        "equity_concept": equity_concept,
+        "shares_concept": shares_concept,
         "price_at_decision": price,
         "revenue": revenue,
         "net_income": net_income,
         "diluted_eps": diluted_eps,
         "equity": equity,
-        "total_debt": total_debt if total_debt != 0 else None,
+        "total_debt": total_debt,
         "shares_outstanding": shares,
         "trailingPE": _safe_div(price, diluted_eps),
         "priceToBook": _safe_div(market_cap, equity),
-        "returnOnEquity": _safe_div(net_income, equity),
-        "profitMargins": _safe_div(net_income, revenue),
+        "returnOnEquity": roe,
+        "profitMargins": profit_margin,
         "debtToEquity": _safe_div(total_debt, equity),
         "currentRatio": _safe_div(current_assets, current_liabilities),
         "revenueGrowth": (
@@ -405,7 +561,11 @@ def fetch_historical_news(
     end_date: date,
     max_records: int = 12,
 ) -> dict[str, Any]:
-    """Historical headlines bounded by the requested window via GDELT."""
+    """Historical headlines via GDELT, with cache and 429 backoff.
+
+    Operational API failures are returned in `error`; callers can distinguish
+    them from a legitimate zero-headline historical window.
+    """
     company = COMPANY_NAMES.get(ticker.upper(), ticker.upper())
     query = f'("{company}" OR {ticker.upper()})'
     params = {
@@ -418,21 +578,67 @@ def fetch_historical_news(
         "enddatetime": end_date.strftime("%Y%m%d235959"),
     }
 
-    try:
-        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            response = client.get(GDELT_DOC_URL, params=params)
-            response.raise_for_status()
-            data = response.json()
-    except Exception as exc:
-        _trace(f"GDELT no disponible para {ticker} {start_date}..{end_date}: {exc}")
-        return {
-            "source": "GDELT",
-            "window_start": start_date.isoformat(),
-            "window_end": end_date.isoformat(),
-            "headlines": [],
-            "articles": [],
-            "error": str(exc),
-        }
+    cache_path = GDELT_CACHE / (
+        f"{ticker.upper()}_{start_date.isoformat()}_{end_date.isoformat()}_{max_records}.json"
+    )
+    if cache_path.exists():
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        _trace(f"GDELT cache HIT {ticker} {start_date}..{end_date}")
+    else:
+        retries = max(1, int(os.getenv("GDELT_MAX_RETRIES", "4")))
+        base_wait = max(1.0, float(os.getenv("GDELT_BACKOFF_SECONDS", "3")))
+        data = None
+        last_error: Exception | None = None
+
+        with httpx.Client(
+            timeout=30.0,
+            follow_redirects=True,
+            headers={"User-Agent": "Building-AI-Agents-for-Finance/Chapter8"},
+        ) as client:
+            for attempt in range(1, retries + 1):
+                try:
+                    response = client.get(GDELT_DOC_URL, params=params)
+                    if response.status_code == 429:
+                        retry_after = response.headers.get("Retry-After")
+                        try:
+                            wait = float(retry_after) if retry_after else base_wait * (2 ** (attempt - 1))
+                        except ValueError:
+                            wait = base_wait * (2 ** (attempt - 1))
+                        if attempt < retries:
+                            _trace(
+                                f"GDELT 429 para {ticker}; reintento {attempt}/{retries} "
+                                f"en {wait:.0f}s"
+                            )
+                            time.sleep(wait)
+                            continue
+                    response.raise_for_status()
+                    data = response.json()
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < retries:
+                        wait = base_wait * (2 ** (attempt - 1))
+                        _trace(
+                            f"GDELT error para {ticker}; reintento {attempt}/{retries} "
+                            f"en {wait:.0f}s: {exc}"
+                        )
+                        time.sleep(wait)
+
+        if data is None:
+            error_text = str(last_error or "GDELT sin respuesta")
+            _trace(
+                f"GDELT no disponible para {ticker} {start_date}..{end_date}: {error_text}"
+            )
+            return {
+                "source": "GDELT",
+                "window_start": start_date.isoformat(),
+                "window_end": end_date.isoformat(),
+                "headlines": [],
+                "articles": [],
+                "error": error_text,
+            }
+
+        cache_path.write_text(json.dumps(data), encoding="utf-8")
 
     articles = data.get("articles") or []
     cleaned: list[dict[str, Any]] = []
@@ -464,3 +670,4 @@ def fetch_historical_news(
         "articles": cleaned,
         "error": None,
     }
+
