@@ -190,10 +190,11 @@ def fundamentals_analyst(state: CommitteeState) -> dict:
     trace("fundamentals", f"DATA {data}")
     trace("fundamentals", "LLM -> GPT-5.6 Terra")
     sys = SystemMessage(content=(
-        "You are a senior equity fundamentals analyst. Given the ratios, write a SHORT "
-        "report (max 150 words) covering: (1) valuation stance, (2) profitability, "
-        "(3) balance-sheet strength, (4) growth. Conclude with a tilt: "
-        "BULLISH / NEUTRAL / BEARISH on fundamentals."
+        "Eres un analista fundamental senior de renta variable. Escribe TODO el informe "
+        "en español. A partir de los ratios, redacta un informe BREVE (máx. 150 palabras) "
+        "que cubra: (1) valoración, (2) rentabilidad, (3) fortaleza del balance y "
+        "(4) crecimiento. Concluye con un sesgo claro: BULLISH / NEUTRAL / BEARISH "
+        "en fundamentales."
     ))
     msg = HumanMessage(content=f"Ticker: {state['ticker']}\nRatios: {data}")
     out = balanced_model.invoke([sys, msg])
@@ -208,9 +209,10 @@ def technicals_analyst(state: CommitteeState) -> dict:
     trace("technicals", f"DATA {ind}")
     trace("technicals", "LLM -> GPT-5.6 Terra")
     sys = SystemMessage(content=(
-        "You are a technical analyst. Given price-derived indicators, write a SHORT "
-        "report (max 120 words) on trend (price vs SMA50/SMA200), momentum (RSI), and "
-        "volatility. Conclude with: BULLISH / NEUTRAL / BEARISH on technicals."
+        "Eres un analista técnico. Escribe TODO el informe en español. A partir de los "
+        "indicadores derivados del precio, redacta un informe BREVE (máx. 120 palabras) "
+        "sobre tendencia (precio frente a SMA50/SMA200), momentum (RSI) y volatilidad. "
+        "Concluye con: BULLISH / NEUTRAL / BEARISH en análisis técnico."
     ))
     msg = HumanMessage(content=f"Ticker: {state['ticker']}\nIndicators: {ind}")
     out = balanced_model.invoke([sys, msg])
@@ -226,16 +228,16 @@ def sentiment_analyst(state: CommitteeState) -> dict:
     trace("sentiment", "LLM -> GPT-5.6 Luna")
     body = "\n- ".join(headlines) if headlines else "(no headlines available)"
     sys = SystemMessage(content=(
-        "You are a news sentiment analyst. Each line below is one article, already "
-        "filtered to be primarily about the ticker. Format is "
-        "'[date, publisher] title — first sentence'. Use the metadata, not just the "
-        "title text:\n"
-        "  - Weight RECENT articles more heavily than older ones (sentiment decays).\n"
-        "  - Treat tier-1 financial press (Reuters, Bloomberg, WSJ, FT) as harder "
-        "evidence than opinion outlets or sector blogs.\n"
-        "  - If coverage is concentrated in a single publisher, flag it as possible "
-        "PR push rather than broad market sentiment.\n"
-        "Produce a SHORT report (max 120 words) and score sentiment as: "
+        "Eres un analista de sentimiento de noticias. Escribe TODO el informe en español. "
+        "Cada línea inferior corresponde a un artículo ya filtrado para que trate "
+        "principalmente sobre el ticker. El formato es '[fecha, medio] titular — primera "
+        "frase'. Usa los metadatos, no solo el titular:\n"
+        "  - Da más peso a los artículos RECIENTES que a los antiguos.\n"
+        "  - Trata la prensa financiera de primer nivel (Reuters, Bloomberg, WSJ, FT) "
+        "como evidencia más fuerte que medios de opinión o blogs sectoriales.\n"
+        "  - Si la cobertura se concentra en un solo medio, indícalo como posible "
+        "impulso de PR y no como sentimiento amplio del mercado.\n"
+        "Produce un informe BREVE (máx. 120 palabras) y califica el sentimiento como: "
         "POSITIVE / MIXED / NEGATIVE."
     ))
     msg = HumanMessage(content=f"Ticker: {state['ticker']}\nHeadlines:\n- {body}")
@@ -251,9 +253,10 @@ def macro_analyst(state: CommitteeState) -> dict:
     trace("macro", f"DATA {macro}")
     trace("macro", "LLM -> GPT-5.6 Terra")
     sys = SystemMessage(content=(
-        "You are a macro strategist. Given a short macro snapshot, write a SHORT report "
-        "(max 120 words) on the regime (risk-on / risk-off / neutral) and what it "
-        "implies for a single-name long-only equity position."
+        "Eres un estratega macro. Escribe TODO el informe en español. A partir de esta "
+        "instantánea macro, redacta un informe BREVE (máx. 120 palabras) sobre el régimen "
+        "(risk-on / risk-off / neutral) y qué implica para una posición larga en una "
+        "acción individual."
     ))
     msg = HumanMessage(content=f"Macro snapshot: {macro}")
     out = balanced_model.invoke([sys, msg])
@@ -268,8 +271,9 @@ def portfolio_manager(state: CommitteeState) -> dict:
     )
     trace("portfolio_manager", "LLM -> GPT-5.6 Sol (high reasoning)")
     sys = SystemMessage(content=(
-        "You are the Portfolio Manager. Synthesise the four analyst reports into a "
-        "single thesis (max 250 words). End STRICTLY with one line of the form:\n"
+        "Eres el Portfolio Manager. Escribe TODO el análisis en español. Sintetiza los "
+        "cuatro informes en una única tesis (máx. 250 palabras). Termina ESTRICTAMENTE "
+        "con una línea de control en inglés con la forma:\n"
         "ACTION=<BUY|HOLD|SELL>; CONFIDENCE=<0-100>; SIZE_PCT=<0.0-5.0>\n\n"
         "Where:\n"
         "  - ACTION    : the directional call.\n"
@@ -325,11 +329,14 @@ def risk_officer(state: CommitteeState) -> dict:
         }
 
     sys = SystemMessage(content=(
-        "You are the Chief Risk Officer. Review the PM thesis and reject if any of the "
-        "following are true: (a) BUY recommended but the thesis ignores macro headwinds, "
-        "(b) SIZE_PCT > 3.0 on a single name (the firm-wide single-name cap), "
-        "(c) CONFIDENCE below 50. Otherwise approve. Reply STRICTLY in the form:\n"
-        "VERDICT=<APPROVED|REJECTED>; REASON=<short explanation>"
+        "Eres el Chief Risk Officer. Escribe la explicación en español. Revisa la tesis "
+        "del Portfolio Manager y rechaza si se cumple cualquiera de estas condiciones: "
+        "(a) se recomienda BUY pero la tesis ignora vientos macro en contra, "
+        "(b) SIZE_PCT > 3.0 para una sola acción, "
+        "(c) CONFIDENCE es inferior a 50. En caso contrario, aprueba. "
+        "Responde ESTRICTAMENTE con esta estructura de control, manteniendo las claves "
+        "VERDICT y REASON en inglés, pero escribiendo REASON en español:\n"
+        "VERDICT=<APPROVED|REJECTED>; REASON=<explicación breve en español>"
     ))
     msg = HumanMessage(content=(
         f"PM thesis:\n{state['pm_thesis']}\n\nRealized 30d vol (ann.): {vol:.1%}"
@@ -391,21 +398,21 @@ def run_committee(ticker: str) -> dict:
 if __name__ == "__main__":
     result = run_committee("TSLA")
     print("=" * 80)
-    print(f"FINAL DECISION for {result['ticker']}: {result['final_decision']}")
+    print(f"DECISIÓN FINAL para {result['ticker']}: {result['final_decision']}")
     print("=" * 80)
-    print("\n--- PM Thesis ---")
+    print("\n--- Tesis del Portfolio Manager ---")
     print(result["pm_thesis"])
-    print("\n--- Risk Verdict ---")
+    print("\n--- Veredicto de Riesgo ---")
     print(result["risk_verdict"])
     print("\n\n")
     print("=" * 80)
-    print("FOUR ANALYSTS DETAILS")
+    print("DETALLE DE LOS CUATRO ANALISTAS")
     print("=" * 80)
-    print("\n--- Fundament Report ---")
+    print("\n--- Informe Fundamental ---")
     print(result["fundamentals_report"])
-    print("\n--- Technical Report ---")
+    print("\n--- Informe Técnico ---")
     print(result["technicals_report"])
-    print("\n--- Sentiment Report ---")
+    print("\n--- Informe de Sentimiento ---")
     print(result["sentiment_report"])
-    print("\n--- Macro Report ---")
+    print("\n--- Informe Macro ---")
     print(result["macro_report"])
