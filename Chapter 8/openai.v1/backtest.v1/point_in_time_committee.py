@@ -122,7 +122,10 @@ def sentiment_analyst(state: PITCommitteeState) -> dict:
             "No se genera una señal degradada; reanuda la ejecución más tarde."
         )
     headlines = data.get("headlines") or []
-    trace("pit/sentiment", f"DATA source=GDELT headlines={len(headlines)}")
+    trace(
+        "pit/sentiment",
+        f"DATA source={data.get('source')} headlines={len(headlines)}",
+    )
     body = "\n- ".join(headlines) if headlines else "(sin titulares históricos disponibles)"
     sys = SystemMessage(content=(
         "Eres un analista de sentimiento en un backtest histórico. Solo puedes usar "
