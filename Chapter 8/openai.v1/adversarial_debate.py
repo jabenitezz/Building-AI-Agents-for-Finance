@@ -72,10 +72,11 @@ class DebateState(TypedDict):
 def bull_node(state: DebateState) -> dict:
     trace("debate/bull", f"START ticker={state['ticker']} -> GPT-5.6 Sol")
     sys = SystemMessage(content=(
-        "You are a BULL analyst. Construct the strongest possible case to ENTER a long "
-        "position. Cite the strongest evidence from the committee thesis: catalysts, "
-        "valuation support, technical confirmation, sentiment tailwinds. Be concrete and "
-        "do NOT hedge. Max 200 words. End with: BULL_CONVICTION=<0-100>."
+        "Eres un analista BULL. Escribe TODO en español. Construye el argumento alcista "
+        "más sólido posible para ENTRAR en una posición larga. Cita la evidencia más "
+        "fuerte de la tesis del comité: catalizadores, valoración, confirmación técnica "
+        "y sentimiento favorable. Sé concreto y no suavices el argumento. Máx. 200 "
+        "palabras. Termina con la línea de control: BULL_CONVICTION=<0-100>."
     ))
     msg = HumanMessage(content=(
         f"Ticker: {state['ticker']}\n"
@@ -91,10 +92,11 @@ def bull_node(state: DebateState) -> dict:
 def bear_node(state: DebateState) -> dict:
     trace("debate/bear", f"START ticker={state['ticker']} -> GPT-5.6 Terra")
     sys = SystemMessage(content=(
-        "You are a BEAR analyst. Construct the strongest possible case AGAINST entering "
-        "a long position. Surface risks the committee may have under-weighted: tail "
-        "risks, macro headwinds, valuation stretch, sentiment crowding, technical "
-        "exhaustion. Be concrete and do NOT hedge. Max 200 words. End with: "
+        "Eres un analista BEAR. Escribe TODO en español. Construye el argumento bajista "
+        "más sólido posible CONTRA entrar en una posición larga. Señala riesgos que el "
+        "comité pueda haber infravalorado: riesgos de cola, vientos macro en contra, "
+        "valoración exigente, sentimiento saturado o agotamiento técnico. Sé concreto y "
+        "no suavices el argumento. Máx. 200 palabras. Termina con: "
         "BEAR_CONVICTION=<0-100>."
     ))
     msg = HumanMessage(content=(
@@ -111,9 +113,9 @@ def bear_node(state: DebateState) -> dict:
 def devil_advocate(state: DebateState) -> dict:
     trace("debate/devil", "START -> comparing Bull and Bear -> GPT-5.6 Terra")
     sys = SystemMessage(content=(
-        "You are a Devil's Advocate. Identify the SINGLE weakest claim in the BULL case "
-        "and the SINGLE weakest claim in the BEAR case, and explain in one sentence each "
-        "why those claims are weak. Max 150 words."
+        "Eres el Abogado del Diablo. Escribe TODO en español. Identifica la ÚNICA "
+        "afirmación más débil del caso BULL y la ÚNICA afirmación más débil del caso BEAR, "
+        "y explica en una frase por cada lado por qué es débil. Máx. 150 palabras."
     ))
     msg = HumanMessage(content=(
         f"BULL case:\n{state['bull_case']}\n\nBEAR case:\n{state['bear_case']}"
@@ -135,10 +137,11 @@ def _parse_verdict(text: str) -> str:
 def judge_node(state: DebateState) -> dict:
     trace("debate/judge", "START -> final adjudication -> GPT-5.6 Terra")
     sys = SystemMessage(content=(
-        "You are a NEUTRAL Judge. Weigh the bull case, the bear case, and the devil's "
-        "critique. Issue a verdict that may differ from the committee's prior decision. "
-        "Reply STRICTLY in the form:\n"
-        "VERDICT=<BUY|HOLD|SELL>\nCONFIDENCE=<0-100>\nRATIONALE=<2-3 sentences>"
+        "Eres un Juez NEUTRAL. Escribe la explicación en español. Sopesa el caso BULL, "
+        "el caso BEAR y la crítica del Abogado del Diablo. Emite un veredicto que puede "
+        "diferir de la decisión previa del comité. Responde ESTRICTAMENTE con estas "
+        "claves de control en inglés, pero redacta RATIONALE en español:\n"
+        "VERDICT=<BUY|HOLD|SELL>\nCONFIDENCE=<0-100>\nRATIONALE=<2-3 frases en español>"
     ))
     msg = HumanMessage(content=(
         f"Committee prior: {state['committee_decision']}\n\n"
@@ -195,10 +198,10 @@ def run_pipeline(ticker: str) -> dict:
 if __name__ == "__main__":
     out = run_pipeline("TSLA")
     print("=" * 80)
-    print(f"COMMITTEE said       : {out['committee']['final_decision']}")
-    print(f"DEBATE  judge says   : {out['debate']['final_decision']}")
+    print(f"COMITÉ dijo          : {out['committee']['final_decision']}")
+    print(f"JUEZ del debate dice : {out['debate']['final_decision']}")
     print("=" * 80)
-    print("\n--- Bull case ---\n",        out["debate"]["bull_case"])
-    print("\n--- Bear case ---\n",        out["debate"]["bear_case"])
+    print("\n--- Caso alcista (BULL) ---\n", out["debate"]["bull_case"])
+    print("\n--- Caso bajista (BEAR) ---\n", out["debate"]["bear_case"])
     print("\n--- Devil's critique ---\n", out["debate"]["devil_critique"])
-    print("\n--- Judge verdict ---\n",    out["debate"]["judge_verdict"])
+    print("\n--- Veredicto del Juez ---\n", out["debate"]["judge_verdict"])
