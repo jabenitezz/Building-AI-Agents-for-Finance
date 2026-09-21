@@ -5,7 +5,7 @@ Esta versión separa el problema en dos fases:
 FASE A — generación de señales (usa LLM y datos históricos point-in-time)
 datos históricos -> comité multiagente -> signals.csv
 
-FASE B — motor de backtest (siguiente paso)
+FASE B — motor de backtest (implementado con VectorBT)
 signals.csv -> cartera -> PnL -> Sharpe / drawdown / benchmarks
 
 El objetivo es que la fase B pueda ejecutarse muchas veces sin volver a pagar llamadas a modelos.
@@ -147,13 +147,61 @@ El CSV guarda execution_date y execution_open_price para que el futuro motor de 
 
 SELL NO significa abrir un short.
 
-## Próxima fase
+## Fase B — backtest con VectorBT
 
-El siguiente componente consumirá signals.csv con un motor de backtesting (VectorBT u otro) y comparará, sin llamadas adicionales al LLM:
+El motor `run_backtest.py` consume exclusivamente `signals.csv`; no vuelve a invocar ningún LLM.
 
-    Sistema multiagente
-    vs S&P 500
-    vs Equal Weight del universo
-    vs Buy & Hold del universo
+Semántica de cartera:
 
-Métricas previstas: rentabilidad, rentabilidad anualizada, volatilidad, Sharpe, max drawdown, hit rate, turnover y número de operaciones.
+    BUY  = añadir size_pct del valor TOTAL actual de la cartera
+    HOLD = mantener la posición existente
+    SELL = liquidar completamente la posición larga
+
+Se utiliza una única bolsa de efectivo compartida entre todos los tickers y se respeta el `execution_open_price` ya guardado en el CSV. Cuando coinciden órdenes el mismo día, se procesan SELL antes de BUY.
+
+La simulación usa VectorBT mediante `Portfolio.from_order_func()`, porque necesitamos sizing incremental dependiente del valor actual de cartera. VectorBT mantiene posiciones, cash, órdenes, comisiones, slippage y curva de equity.
+
+Benchmarks incluidos:
+
+    MAS
+    SPY Buy & Hold
+    Universe Buy & Hold
+    Equal Weight Rebalanced
+
+`Universe Buy & Hold` compra los tickers del universo a pesos iguales al principio y no rebalancea. `Equal Weight Rebalanced` vuelve a 1/N en cada fecha de ejecución de señales.
+
+Si no se especifica `--evaluation-end`, el motor evalúa hasta el fin del mes posterior a la última `decision_date`. Esto da tiempo a actuar a la última señal.
+
+Instalación:
+
+    uv pip install -r "backtest.v1/requirements.txt"
+
+Ejecución base, sin costes:
+
+    python "backtest.v1/run_backtest.py"
+
+Con costes:
+
+    python "backtest.v1/run_backtest.py" \
+      --fees-bps 10 \
+      --slippage-bps 5
+
+Con fecha final explícita:
+
+    python "backtest.v1/run_backtest.py" \
+      --evaluation-end 2026-04-30
+
+Capital inicial distinto:
+
+    python "backtest.v1/run_backtest.py" \
+      --initial-cash 10000
+
+Salidas:
+
+    backtest.v1/output/backtest/summary.csv
+    backtest.v1/output/backtest/equity_curve.csv
+    backtest.v1/output/backtest/mas_orders.csv
+    backtest.v1/output/backtest/mas_trades.csv
+    backtest.v1/output/backtest/signals_used.csv
+
+Métricas: rentabilidad total/anualizada, volatilidad anualizada, Sharpe con rf=0, max drawdown, exposición media/máxima, turnover, órdenes, trades cerrados e hit rate.
