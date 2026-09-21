@@ -92,7 +92,29 @@ def parse_decision(committee_result: dict) -> tuple[str, int, float]:
 # ticker. If it says BUY/SELL, hold the position until the next rebalance.
 # ---------------------------------------------------------------------------
 def _price_on_or_before(series: pd.Series, ts: pd.Timestamp) -> float | None:
-    available = series[series.index <= ts]
+    """Return the latest close on or before `ts`, handling yfinance timezones.
+
+    Recent yfinance/pandas versions return daily price indexes as timezone-aware
+    timestamps (typically America/New_York), while pandas.date_range() produces
+    timezone-naive rebalance dates. Comparing both directly raises:
+        TypeError: Cannot compare tz-naive and tz-aware datetime-like objects
+
+    For daily backtesting we only need the calendar date, so normalize both
+    sides to timezone-naive timestamps before comparing.
+    """
+    if series.empty:
+        return None
+
+    idx = series.index
+    if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None:
+        idx = idx.tz_localize(None)
+
+    ts = pd.Timestamp(ts)
+    if ts.tzinfo is not None:
+        ts = ts.tz_localize(None)
+
+    mask = idx <= ts
+    available = series.iloc[mask]
     return float(available.iloc[-1]) if len(available) else None
 
 
@@ -114,6 +136,12 @@ def walk_forward(
         t: yf.Ticker(t).history(start=start, end=end)["Close"]
         for t in universe
     }
+    for ticker, series in prices.items():
+        tz = getattr(series.index, "tz", None)
+        trace(
+            "backtest",
+            f"{ticker}: historical rows={len(series)} index_tz={tz}",
+        )
 
     trades: list[Trade] = []
     for i, decision_date in enumerate(rebalance_dates[:-1]):
