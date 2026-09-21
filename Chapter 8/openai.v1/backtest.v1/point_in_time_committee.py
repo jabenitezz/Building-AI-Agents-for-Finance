@@ -1,4 +1,10 @@
-"""Point-in-time Investment Committee for backtest.v1."""
+"""Point-in-time Investment Committee for backtest.v1.
+
+This file preserves the investment policy defined by the original
+Chapter 8/investment_committee.py and only changes the DATA ACCESS layer to be
+point-in-time. In particular, SIZE_PCT is a TARGET position as a percentage of
+TOTAL PORTFOLIO NAV, not an incremental amount to add.
+"""
 from __future__ import annotations
 
 import re
@@ -74,7 +80,7 @@ def fundamentals_analyst(state: PITCommitteeState) -> dict:
         "Eres un analista fundamental senior. Estás realizando un backtest histórico. "
         "NO conoces información posterior a la fecha indicada. Los datos proceden del "
         "último 10-K que ya había sido presentado a la SEC en esa fecha. Escribe TODO "
-        "en español, máximo 160 palabras. Evalúa valoración, rentabilidad, balance y "
+        "en español, máximo 150 palabras. Evalúa valoración, rentabilidad, balance y "
         "crecimiento. No inventes datos ni utilices conocimiento posterior. Concluye "
         "con BULLISH / NEUTRAL / BEARISH en fundamentales."
     ))
@@ -149,13 +155,20 @@ def sentiment_analyst(state: PITCommitteeState) -> dict:
 
     body = "\n- ".join(prompt_items) if prompt_items else "(sin noticias históricas relevantes disponibles)"
     sys = SystemMessage(content=(
-        "Eres un analista de sentimiento en un backtest histórico. Solo puedes usar "
-        "las noticias suministradas, todas acotadas a la ventana indicada y filtradas "
-        "por relevancia directa para el ticker. Cada elemento puede incluir título y "
-        "un resumen breve. Si no hay noticias relevantes, dilo explícitamente y usa "
-        "MIXED/insuficiente en vez de inventar información. No utilices el sentimiento "
-        "calculado por el proveedor aunque exista en los datos de auditoría. Escribe "
-        "TODO en español, máximo 120 palabras. Concluye POSITIVE / MIXED / NEGATIVE."
+        "Eres un analista de sentimiento de noticias en un backtest histórico. "
+        "Solo puedes usar las noticias suministradas, todas acotadas a la ventana "
+        "indicada y ya filtradas para que sean relevantes para el ticker. Cada línea "
+        "incluye fecha, medio, título y, cuando existe, un resumen breve. Conserva la "
+        "política del comité original:\n"
+        "  - Da MÁS peso a artículos recientes que a los antiguos; el sentimiento decae.\n"
+        "  - Trata Reuters, Bloomberg, WSJ y FT como evidencia más fuerte que opinión "
+        "o blogs sectoriales.\n"
+        "  - Si la cobertura está concentrada en un solo medio, señálalo como posible "
+        "impulso de PR y no como sentimiento amplio del mercado.\n"
+        "Si no hay noticias relevantes, dilo explícitamente y usa MIXED/insuficiente "
+        "en vez de inventar información. No utilices el sentimiento calculado por el "
+        "proveedor aunque exista en los datos de auditoría. Escribe TODO en español, "
+        "máximo 120 palabras. Concluye POSITIVE / MIXED / NEGATIVE."
     ))
     msg = HumanMessage(content=(
         f"Ticker: {ticker}\nVentana histórica: {start}..{end}\nNoticias filtradas:\n- {body}"
@@ -174,8 +187,9 @@ def macro_analyst(state: PITCommitteeState) -> dict:
     sys = SystemMessage(content=(
         "Eres un estratega macro en un backtest histórico. Los datos están cortados "
         "en la fecha indicada. Escribe TODO en español, máximo 120 palabras. Evalúa "
-        "risk-on/risk-off/neutral a partir de VIX, Treasury 10Y y S&P 500 a un mes. "
-        "No utilices información posterior."
+        "el régimen risk-on / risk-off / neutral a partir de VIX, Treasury 10Y y "
+        "S&P 500 a un mes, y explica qué implica para una posición larga long-only "
+        "en una acción individual. No utilices información posterior."
     ))
     msg = HumanMessage(content=f"Fecha histórica: {as_of}\nMacro: {data}")
     out = balanced_model.invoke([sys, msg])
@@ -191,13 +205,31 @@ def portfolio_manager(state: PITCommitteeState) -> dict:
         "genera DESPUÉS de terminar el día histórico indicado y puede usar toda la "
         "información disponible durante ese día. Cualquier operación se ejecutará en "
         "la APERTURA DE LA SIGUIENTE SESIÓN bursátil, nunca al cierre del mismo día. "
-        "No uses hechos posteriores a la fecha indicada. Sintetiza los cuatro informes "
-        "en español, máximo 250 palabras. "
-        "Termina ESTRICTAMENTE con:\n"
-        "ACTION=<BUY|HOLD|SELL>; CONFIDENCE=<0-100>; SIZE_PCT=<0.0-5.0>\n"
-        "BUY abre/aumenta un largo; HOLD no añade; SELL significa salir/no mantener "
-        "un largo, NO abrir un short. BUY debe tener SIZE_PCT normalmente entre "
-        "0.5 y 3.0; HOLD y SELL deben tener SIZE_PCT=0.0."
+        "No uses hechos posteriores a la fecha indicada. Conserva EXACTAMENTE la "
+        "política de decisión y sizing del investment_committee.py original. "
+        "Sintetiza los cuatro informes en una única tesis en español (máx. 250 palabras). "
+        "Termina ESTRICTAMENTE con una línea de control en inglés con la forma:\n"
+        "ACTION=<BUY|HOLD|SELL>; CONFIDENCE=<0-100>; SIZE_PCT=<0.0-5.0>\n\n"
+        "Where:\n"
+        "  - ACTION    : the directional call.\n"
+        "  - CONFIDENCE: how strongly you back the call (0 = none, 100 = very high).\n"
+        "  - SIZE_PCT  : the TARGET POSITION as a percentage of TOTAL PORTFOLIO NAV.\n"
+        "                It is NOT an incremental amount to add to an existing position.\n"
+        "                Size purely on your conviction; do not anticipate any\n"
+        "                downstream review. Use this scale:\n"
+        "                  0.0      -> HOLD or SELL (no new long exposure).\n"
+        "                  0.5-1.0  -> probe / starter position when conviction is mixed.\n"
+        "                  1.0-2.0  -> standard BUY at moderate conviction (CONFIDENCE 50-70).\n"
+        "                  2.0-3.0  -> strong BUY at high conviction (CONFIDENCE 70+).\n"
+        "                  3.1-5.0  -> concentrated, high-conviction bet. Reserve for\n"
+        "                              exceptionally clean setups where every analyst\n"
+        "                              is meaningfully bullish AND the macro regime\n"
+        "                              supports the trade.\n"
+        "                A BUY at SIZE_PCT=0 is incoherent — pick HOLD instead.\n"
+        "                A HOLD or SELL must have SIZE_PCT=0.\n\n"
+        "Portfolio interpretation at each rebalance: BUY means target SIZE_PCT; "
+        "HOLD or SELL means target long exposure 0% for the next holding period. "
+        "SELL never opens a short."
     ))
     msg = HumanMessage(content=(
         f"Fecha de señal EOD: {state['as_of_date']}\n"
@@ -236,15 +268,21 @@ def risk_officer(state: PITCommitteeState) -> dict:
     vol = state["technicals_data"].get("vol_30d_annualized")
     trace("pit/risk_officer", f"START action={action} confidence={confidence} size={size_pct:.1f}% vol={vol}")
 
-    if vol is not None and vol > 0.60 and action == "BUY":
+    # Preserve the original committee's deterministic 60% volatility ceiling.
+    # It is checked before the CRO LLM and is not conditional on ACTION.
+    if vol is not None and vol > 0.60:
         verdict = f"VETO: volatilidad anualizada 30d {vol:.1%} supera 60%."
         trace("pit/risk_officer", "HARD VETO volatility > 60%")
         return {"risk_verdict": verdict, "final_decision": "HOLD (risk veto)"}
 
     sys = SystemMessage(content=(
-        "Eres el Chief Risk Officer en un backtest histórico LONG-ONLY. Rechaza un BUY "
-        "si ignora vientos macro claros, SIZE_PCT > 3.0, o CONFIDENCE < 50. "
-        "HOLD/SELL con SIZE_PCT=0 son coherentes. Responde ESTRICTAMENTE: "
+        "Eres el Chief Risk Officer en un backtest histórico LONG-ONLY. Conserva las "
+        "reglas del comité original. Revisa la tesis del Portfolio Manager y rechaza "
+        "si se cumple cualquiera de estas condiciones: "
+        "(a) se recomienda BUY pero la tesis ignora vientos macro en contra, "
+        "(b) SIZE_PCT > 3.0 para una sola acción (límite firm-wide), "
+        "(c) CONFIDENCE es inferior a 50. En caso contrario, aprueba. "
+        "Responde ESTRICTAMENTE: "
         "VERDICT=<APPROVED|REJECTED>; REASON=<explicación breve en español>."
     ))
     msg = HumanMessage(content=(
