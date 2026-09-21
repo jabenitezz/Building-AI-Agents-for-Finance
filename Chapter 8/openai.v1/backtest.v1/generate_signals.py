@@ -34,7 +34,9 @@ CSV_FIELDS = [
     "revenue_growth", "earnings_growth", "technical_data_end", "sma_50",
     "sma_200", "rsi_14", "vol_30d_annualized", "news_source",
     "news_window_start", "news_window_end", "news_count", "news_raw_count",
-    "news_eligible_count", "news_filtered_out_count", "news_duplicate_or_empty_count",
+    "news_eligible_count", "news_direct_count", "news_summary_candidate_count",
+    "news_fallback_used_count", "news_direct_target",
+    "news_filtered_out_count", "news_duplicate_or_empty_count",
     "news_title_relevance_threshold", "news_summary_relevance_threshold",
     "headlines_json",
     "macro_data_end", "vix", "us_10y_yield_pct", "spx_1m_return_pct",
@@ -155,6 +157,10 @@ def _flatten(
         "news_count": len(s.get("headlines") or []),
         "news_raw_count": s.get("raw_count"),
         "news_eligible_count": s.get("eligible_count"),
+        "news_direct_count": s.get("direct_count"),
+        "news_summary_candidate_count": s.get("summary_candidate_count"),
+        "news_fallback_used_count": s.get("fallback_used_count"),
+        "news_direct_target": s.get("direct_target"),
         "news_filtered_out_count": s.get("filtered_out_count"),
         "news_duplicate_or_empty_count": s.get("duplicate_or_empty_count"),
         "news_title_relevance_threshold": s.get("title_relevance_threshold"),
@@ -202,7 +208,9 @@ def print_signal(result: dict[str, Any], row: dict[str, Any], show_reports: bool
     print(
         "NOTICIAS "
         f"{s.get('window_start')}..{s.get('window_end')} | fuente={s.get('source')} | "
-        f"raw={s.get('raw_count', 'N/D')} | elegibles={s.get('eligible_count', 'N/D')} | "
+        f"raw={s.get('raw_count', 'N/D')} | directas={s.get('direct_count', 'N/D')} | "
+        f"candidatas_resumen={s.get('summary_candidate_count', 'N/D')} | "
+        f"fallback_usado={s.get('fallback_used_count', 'N/D')} | "
         f"final={len(s.get('headlines') or [])} | rechazadas={s.get('filtered_out_count', 'N/D')} | "
         f"dup/vacias={s.get('duplicate_or_empty_count', 'N/D')} | "
         f"umbral_titulo={s.get('title_relevance_threshold', 'N/D')} | "
