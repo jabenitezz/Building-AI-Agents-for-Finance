@@ -299,8 +299,8 @@ def build_equal_size_buy_portfolio(
         raise ValueError("fixed_size_pct no puede ser negativo.")
 
     diagnostic = signals.copy()
-    diagnostic["_diag_action"] = diagnostic[action_col]
-    diagnostic["_diag_size_pct"] = np.where(
+    diagnostic["diag_action"] = diagnostic[action_col]
+    diagnostic["diag_size_pct"] = np.where(
         diagnostic[action_col].astype(str).str.upper().eq("BUY"),
         float(fixed_size_pct),
         0.0,
@@ -314,8 +314,8 @@ def build_equal_size_buy_portfolio(
         initial_cash,
         fees,
         slippage,
-        action_col="_diag_action",
-        size_col="_diag_size_pct",
+        action_col="diag_action",
+        size_col="diag_size_pct",
     )
 
 
