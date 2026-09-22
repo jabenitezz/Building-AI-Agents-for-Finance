@@ -28,6 +28,20 @@ sections:
 - `src/underwriting/` — the parallel-enrichment underwriting runner
 - `src/models.py`, `src/common.py` — shared data contracts and configuration
 
+
+
+## Running the project source locally
+
+From the `Chapter 9` directory, run the three examples in this order:
+
+```bash
+python -m src.claims_pipeline.run
+python -m src.fraud_investigation.run
+python -m src.underwriting.run
+```
+
+The first two examples use OpenAI models and require `OPENAI_API_KEY` to be available, for example through a `.env` file in the `Chapter 9` directory. The underwriting example is deterministic and does not require an LLM.
+
 ## Note on Lab 1 iteration limits
 
 The seven-agent pipeline needs more workflow iterations than LlamaIndex's
