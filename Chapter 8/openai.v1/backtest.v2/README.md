@@ -59,6 +59,27 @@ The debate only runs for BUY proposals that pass hard risk. HOLD and SELL
 already imply 0% long exposure, so debating them cannot change the long-only
 portfolio and would only add cost.
 
+## Point-in-time fundamentals
+
+v2 reconstructs fresh fundamental snapshots from SEC Company Facts without a
+paid market-data API. The absolute rule remains:
+
+    filed <= as_of_date
+
+Flow metrics (revenue and net income) are reconstructed TTM. At fiscal year-end
+the 10-K annual value is TTM; after Q1/Q2/Q3 the calculation is:
+
+    TTM = latest annual 10-K + current YTD 10-Q - prior-year comparable YTD 10-Q
+
+Balance-sheet metrics use the latest 10-Q/10-K period available at the decision
+date. P/E is reconstructed as decision-date market cap / TTM net income rather
+than combining the historical price with stale annual EPS.
+
+The signal audit stores the SEC forms, filing dates and periods used in the TTM
+components. To inspect fundamentals without spending any LLM calls:
+
+    python test_fundamentals.py --ticker NVDA --as-of 2026-01-30
+
 Hard risk is deterministic:
 - annualized 30d volatility > 60% -> reject
 - SIZE_PCT > 3.0% -> reject
