@@ -688,6 +688,275 @@ def print_summary(summary: pd.DataFrame) -> None:
     print("=" * 120)
 
 
+
+def _summary_value(
+    summary: pd.DataFrame,
+    strategy: str,
+    column: str,
+) -> float:
+    row = summary.loc[summary["strategy"].eq(strategy), column]
+    if row.empty:
+        return np.nan
+    return float(row.iloc[0])
+
+
+def build_strategy_diagnostics(
+    summary: pd.DataFrame,
+    signals: pd.DataFrame,
+    judge_effect: pd.DataFrame,
+    *,
+    benchmark: str,
+    equal_size_name: str,
+) -> pd.DataFrame:
+    """Build descriptive diagnostics for later strategy calibration.
+
+    These metrics decompose the observed result into sizing, selection,
+    exposure and adversarial effects. They are descriptive diagnostics only;
+    no threshold here changes any trading decision.
+    """
+    mas_name = "MAS + Adversarial"
+    committee_name = "MAS Committee Only"
+    matched_name = f"{benchmark} Target-Exposure Matched"
+    benchmark_bh_name = f"{benchmark} Buy&Hold"
+
+    mas_return = _summary_value(summary, mas_name, "total_return")
+    committee_return = _summary_value(
+        summary, committee_name, "total_return"
+    )
+    equal_return = _summary_value(summary, equal_size_name, "total_return")
+    matched_return = _summary_value(summary, matched_name, "total_return")
+    benchmark_bh_return = _summary_value(
+        summary, benchmark_bh_name, "total_return"
+    )
+    universe_return = _summary_value(
+        summary, "Universe Buy&Hold", "total_return"
+    )
+
+    debated = signals[
+        signals["debate_status"].astype(str).str.upper().eq("RUN")
+    ]
+    final_buys = signals[
+        signals["action"].astype(str).str.upper().eq("BUY")
+    ]
+    overrides = signals[
+        signals["committee_action"].astype(str).str.upper()
+        != signals["action"].astype(str).str.upper()
+    ]
+
+    forward_n = 0
+    forward_mean = np.nan
+    forward_median = np.nan
+    forward_positive_rate = np.nan
+    size_forward_corr = np.nan
+    judge_conf_forward_corr = np.nan
+    conviction_gap_forward_corr = np.nan
+
+    if not judge_effect.empty:
+        valid = judge_effect.copy()
+        valid["forward_return"] = pd.to_numeric(
+            valid["forward_return"], errors="coerce"
+        )
+        valid = valid.dropna(subset=["forward_return"])
+        forward_n = int(len(valid))
+        if forward_n:
+            forward_mean = float(valid["forward_return"].mean())
+            forward_median = float(valid["forward_return"].median())
+            forward_positive_rate = float(
+                (valid["forward_return"] > 0).mean()
+            )
+
+        if forward_n >= 2:
+            # Rank correlation avoids assuming a linear relationship and does
+            # not require scipy. Treat as exploratory, especially for small n.
+            size_rank = pd.to_numeric(
+                valid["pm_size_pct"], errors="coerce"
+            ).rank()
+            ret_rank = valid["forward_return"].rank()
+            size_forward_corr = float(size_rank.corr(ret_rank))
+
+            judge_rank = pd.to_numeric(
+                valid["judge_confidence"], errors="coerce"
+            ).rank()
+            judge_conf_forward_corr = float(judge_rank.corr(ret_rank))
+
+            gap_rank = pd.to_numeric(
+                valid["conviction_gap"], errors="coerce"
+            ).rank()
+            conviction_gap_forward_corr = float(gap_rank.corr(ret_rank))
+
+    row = {
+        "decisions_total": int(len(signals)),
+        "rebalance_dates": int(signals["execution_date"].nunique()),
+        "final_buy_signals": int(len(final_buys)),
+        "debated_buy_signals": int(len(debated)),
+        "judge_buy_count": int(
+            debated["judge_action"].astype(str).str.upper().eq("BUY").sum()
+        ),
+        "judge_hold_count": int(
+            debated["judge_action"].astype(str).str.upper().eq("HOLD").sum()
+        ),
+        "judge_sell_count": int(
+            debated["judge_action"].astype(str).str.upper().eq("SELL").sum()
+        ),
+        "adversarial_overrides": int(len(overrides)),
+        "mas_total_return": mas_return,
+        "committee_total_return": committee_return,
+        "equal_size_total_return": equal_return,
+        "benchmark_matched_total_return": matched_return,
+        "benchmark_buy_hold_total_return": benchmark_bh_return,
+        "universe_buy_hold_total_return": universe_return,
+        # Positive => PM variable sizing added return vs fixed-size replay.
+        "sizing_effect_pp": (
+            (mas_return - equal_return) * 100.0
+            if not (pd.isna(mas_return) or pd.isna(equal_return))
+            else np.nan
+        ),
+        # Positive => selected assets beat benchmark under same target exposure.
+        "selection_vs_benchmark_same_exposure_pp": (
+            (mas_return - matched_return) * 100.0
+            if not (pd.isna(mas_return) or pd.isna(matched_return))
+            else np.nan
+        ),
+        # Positive => adversarial validation improved Committee-only return.
+        "adversarial_effect_pp": (
+            (mas_return - committee_return) * 100.0
+            if not (pd.isna(mas_return) or pd.isna(committee_return))
+            else np.nan
+        ),
+        # Same underlying benchmark, so this isolates the exposure schedule
+        # versus staying 100% invested in that benchmark.
+        "benchmark_exposure_timing_effect_pp": (
+            (matched_return - benchmark_bh_return) * 100.0
+            if not (
+                pd.isna(matched_return)
+                or pd.isna(benchmark_bh_return)
+            )
+            else np.nan
+        ),
+        # Context only: this mixes selection and exposure and is not a pure
+        # attribution metric.
+        "mas_vs_universe_buy_hold_pp": (
+            (mas_return - universe_return) * 100.0
+            if not (pd.isna(mas_return) or pd.isna(universe_return))
+            else np.nan
+        ),
+        "buy_forward_observations": forward_n,
+        "buy_forward_mean": forward_mean,
+        "buy_forward_median": forward_median,
+        "buy_forward_positive_rate": forward_positive_rate,
+        "size_forward_rank_corr": size_forward_corr,
+        "judge_conf_forward_rank_corr": judge_conf_forward_corr,
+        "conviction_gap_forward_rank_corr": conviction_gap_forward_corr,
+    }
+    return pd.DataFrame([row])
+
+
+def _fmt_pct(value: float) -> str:
+    return "N/D" if pd.isna(value) else f"{value:.2%}"
+
+
+def _fmt_pp(value: float) -> str:
+    return "N/D" if pd.isna(value) else f"{value:+.2f} pp"
+
+
+def _fmt_corr(value: float) -> str:
+    return "N/D" if pd.isna(value) else f"{value:+.2f}"
+
+
+def build_strategy_diagnostic_report(
+    diagnostics: pd.DataFrame,
+    *,
+    benchmark: str,
+) -> str:
+    d = diagnostics.iloc[0]
+
+    lines = [
+        "=" * 100,
+        "STRATEGY DIAGNOSTICS — DESCRIPTIVO, NO REGLA DE TRADING",
+        "=" * 100,
+        (
+            f"Muestra: {int(d['decisions_total'])} decisiones, "
+            f"{int(d['rebalance_dates'])} rebalanceos, "
+            f"{int(d['final_buy_signals'])} BUY finales, "
+            f"{int(d['buy_forward_observations'])} BUY con retorno posterior."
+        ),
+        "",
+        "Descomposición del resultado:",
+        (
+            f"  Sizing PM vs tamaño fijo       : "
+            f"{_fmt_pp(d['sizing_effect_pp'])}"
+        ),
+        (
+            f"  Selección vs {benchmark} misma exposición : "
+            f"{_fmt_pp(d['selection_vs_benchmark_same_exposure_pp'])}"
+        ),
+        (
+            f"  Capa adversarial vs Committee  : "
+            f"{_fmt_pp(d['adversarial_effect_pp'])}"
+        ),
+        (
+            f"  Timing exposición {benchmark} vs 100% B&H : "
+            f"{_fmt_pp(d['benchmark_exposure_timing_effect_pp'])}"
+        ),
+        "",
+        "Calidad descriptiva de BUY:",
+        (
+            f"  Retorno posterior medio        : "
+            f"{_fmt_pct(d['buy_forward_mean'])}"
+        ),
+        (
+            f"  Retorno posterior mediano      : "
+            f"{_fmt_pct(d['buy_forward_median'])}"
+        ),
+        (
+            f"  BUY con retorno > 0            : "
+            f"{_fmt_pct(d['buy_forward_positive_rate'])}"
+        ),
+        "",
+        "Relación exploratoria con retorno posterior (correlación por rangos):",
+        (
+            f"  Tamaño PM vs retorno           : "
+            f"{_fmt_corr(d['size_forward_rank_corr'])}"
+        ),
+        (
+            f"  Confianza Judge vs retorno     : "
+            f"{_fmt_corr(d['judge_conf_forward_rank_corr'])}"
+        ),
+        (
+            f"  Gap Bull-Bear vs retorno       : "
+            f"{_fmt_corr(d['conviction_gap_forward_rank_corr'])}"
+        ),
+        "",
+        (
+            f"Adversarial: {int(d['adversarial_overrides'])} cambios de decisión; "
+            f"Judge BUY/HOLD/SELL = "
+            f"{int(d['judge_buy_count'])}/"
+            f"{int(d['judge_hold_count'])}/"
+            f"{int(d['judge_sell_count'])}."
+        ),
+        "",
+        "Lectura de signos:",
+        "  sizing_effect_pp > 0  => el sizing variable superó al tamaño fijo.",
+        (
+            f"  selection_vs_{benchmark.lower()} > 0 => la selección superó a "
+            f"{benchmark} con el mismo target de exposición."
+        ),
+        "  adversarial_effect_pp > 0 => la capa adversarial mejoró el retorno.",
+        (
+            f"  exposure_timing_effect > 0 => el calendario de exposición superó "
+            f"a estar 100% en {benchmark}."
+        ),
+        "",
+        (
+            "IMPORTANTE: son métricas descriptivas. Con pocas observaciones no "
+            "deben usarse para retocar prompts, umbrales o sizing. Su utilidad "
+            "es observar si los mismos patrones persisten al crecer la muestra."
+        ),
+        "=" * 100,
+    ]
+    return "\n".join(lines)
+
+
 def main() -> None:
     args = parse_args()
     signal_path = Path(args.signals)
@@ -851,6 +1120,20 @@ def main() -> None:
     judge_effect = build_judge_effect(signals, close_df)
     print_judge_effect(judge_effect)
 
+    equal_size_name = f"Equal-Size BUY ({equal_buy_size_pct:.2f}%)"
+    diagnostics = build_strategy_diagnostics(
+        summary,
+        signals,
+        judge_effect,
+        benchmark=args.benchmark,
+        equal_size_name=equal_size_name,
+    )
+    diagnostic_report = build_strategy_diagnostic_report(
+        diagnostics,
+        benchmark=args.benchmark,
+    )
+    print("\n" + diagnostic_report)
+
     equity = pd.concat(
         {name: _value_series(pf) for name, pf in portfolios.items()},
         axis=1,
@@ -888,6 +1171,13 @@ def main() -> None:
     _orders_frame(adversarial).to_csv(output_dir / "mas_orders.csv", index=False)
     _trades_frame(adversarial).to_csv(output_dir / "mas_trades.csv", index=False)
     judge_effect.to_csv(output_dir / "judge_effect.csv", index=False)
+    diagnostics.to_csv(
+        output_dir / "strategy_diagnostics.csv", index=False
+    )
+    (output_dir / "strategy_diagnostics.txt").write_text(
+        diagnostic_report + "\n",
+        encoding="utf-8",
+    )
 
     signals[
         [
@@ -931,6 +1221,8 @@ def main() -> None:
         "mas_trades.csv",
         "signals_used.csv",
         "judge_effect.csv",
+        "strategy_diagnostics.csv",
+        "strategy_diagnostics.txt",
     ):
         print(f"  {output_dir / name}")
     print("\nNo se ha realizado ninguna llamada a un LLM en esta fase.")
