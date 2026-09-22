@@ -695,6 +695,7 @@ def main() -> None:
             "debate_status",
             "bull_conviction",
             "bear_conviction",
+            "conviction_gap",
             "judge_action",
             "judge_confidence",
             "validation_status",
