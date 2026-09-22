@@ -6,11 +6,13 @@ never used as fallbacks.
 
 Data sources:
 - Prices/technicals/macro: yfinance historical series, cut at as_of_date.
-- Fundamentals: SEC Company Facts, using only facts filed on/before as_of_date.
+- Fundamentals: SEC Company Facts, reconstructing TTM flows from 10-K/10-Q
+  and using only facts filed on/before as_of_date.
 - News: Alpha Vantage NEWS_SENTIMENT, bounded by ticker and historical date window.
 
-This is still an educational research harness. SEC annual facts are used for
-fundamentals to keep the point-in-time logic auditable and conservative.
+This is still an educational research harness. Fundamental TTM values retain
+their SEC filing/period components so the point-in-time reconstruction remains
+auditable.
 """
 from __future__ import annotations
 
@@ -1007,6 +1009,7 @@ def fetch_fundamentals(ticker: str, as_of_date: date, price: float) -> dict[str,
             str(shares_rec.get("form")) if shares_rec is not None else None
         ),
         "price_at_decision": price,
+        "market_cap": market_cap,
         "revenue": revenue,
         "net_income": net_income,
         "prior_ttm_revenue": prior_revenue,
