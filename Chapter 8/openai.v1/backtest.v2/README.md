@@ -27,13 +27,29 @@ Architecture:
         execution
 
 The adversarial layer is a validator, not a second Portfolio Manager. It never
-changes SIZE_PCT. Judge APPROVED keeps the exact PM target; Judge REJECTED turns
-the effective target into 0%.
+changes SIZE_PCT. The Judge keeps the directional vocabulary from the book:
+
+    VERDICT=BUY|HOLD|SELL
+    CONFIDENCE=0-100
+
+BUY validates the PM proposal and preserves the exact PM SIZE_PCT. HOLD and SELL
+both reject the long entry and set the effective target to 0%; SELL never opens
+a short. A derived validation_status is stored as APPROVED for Judge BUY and
+REJECTED for Judge HOLD/SELL.
 
 Bull and Bear use the same model tier, reasoning effort and token budget:
 make_opus_equivalent(max_tokens=1500). Their only intended difference is the
 role prompt. Both receive the four original reports plus the PM narrative with
 the ACTION/CONFIDENCE/SIZE_PCT control line removed.
+
+Their structured outputs include:
+
+    BULL_CONVICTION=0-100
+    BEAR_CONVICTION=0-100
+
+These values are stored for audit and later analysis only. They do not resize
+the PM position. The backtest also records conviction_gap =
+bull_conviction - bear_conviction as a diagnostic.
 
 The debate only runs for BUY proposals that pass hard risk. HOLD and SELL
 already imply 0% long exposure, so debating them cannot change the long-only
@@ -61,7 +77,9 @@ run_backtest.py compares:
 
 judge_effect.csv records the next-period underlying return for each debated BUY
 from its execution open to the next rebalance open, or to evaluation-end close
-for the final signal. It is a Judge-filter diagnostic, not portfolio attribution.
+for the final signal. It includes Bull/Bear conviction, conviction_gap,
+Judge BUY/HOLD/SELL, Judge confidence and validation_status. It is a diagnostic
+of the debate layer, not portfolio attribution.
 
 Install from Chapter 8/openai.v1:
 
