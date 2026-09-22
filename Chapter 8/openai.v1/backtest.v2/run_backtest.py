@@ -56,7 +56,11 @@ def load_signals(path: Path) -> pd.DataFrame:
         "size_pct",
         "final_decision",
         "debate_status",
-        "judge_decision",
+        "bull_conviction",
+        "bear_conviction",
+        "judge_action",
+        "judge_confidence",
+        "validation_status",
     }
     missing = sorted(required - set(df.columns))
     if missing:
@@ -466,8 +470,15 @@ def build_judge_effect(
                     "execution_date": start_date,
                     "ticker": ticker,
                     "pm_size_pct": float(row["pm_size_pct"]),
-                    "judge_decision": row.get("judge_decision", ""),
+                    "bull_conviction": row.get("bull_conviction", np.nan),
+                    "bear_conviction": row.get("bear_conviction", np.nan),
+                    "conviction_gap": (
+                        float(row.get("bull_conviction", 0))
+                        - float(row.get("bear_conviction", 0))
+                    ),
+                    "judge_action": row.get("judge_action", ""),
                     "judge_confidence": row.get("judge_confidence", np.nan),
+                    "validation_status": row.get("validation_status", ""),
                     "committee_action": row["committee_action"],
                     "adversarial_action": row["action"],
                     "period_end": end_date,
@@ -489,17 +500,18 @@ def print_judge_effect(effect: pd.DataFrame) -> None:
     print("\n" + "=" * 100)
     print("JUDGE EFFECT — retorno del subyacente durante el siguiente periodo")
     print("=" * 100)
-    for decision in ("APPROVED", "REJECTED"):
+    for action in ("BUY", "HOLD", "SELL"):
         part = effect[
-            effect["judge_decision"].astype(str).str.upper().eq(decision)
+            effect["judge_action"].astype(str).str.upper().eq(action)
         ]
         if part.empty:
-            print(f"{decision:8s}: n=0")
+            print(f"{action:5s}: n=0")
         else:
             print(
-                f"{decision:8s}: n={len(part)} | "
+                f"{action:5s}: n={len(part)} | "
                 f"media={part['forward_return'].mean():.2%} | "
-                f"mediana={part['forward_return'].median():.2%}"
+                f"mediana={part['forward_return'].median():.2%} | "
+                f"gap_conv_medio={part['conviction_gap'].mean():+.1f}"
             )
     print("=" * 100)
 
@@ -567,7 +579,7 @@ def main() -> None:
     print(f"Fees             : {args.fees_bps:.2f} bps")
     print(f"Slippage         : {args.slippage_bps:.2f} bps")
     print("SIZE_PCT         : target como % del NAV TOTAL")
-    print("Judge            : solo veta; nunca cambia SIZE_PCT")
+    print("Judge            : BUY valida; HOLD/SELL vetan; nunca cambia SIZE_PCT")
     print("=" * 100)
 
     fees = args.fees_bps / 10_000.0
@@ -681,8 +693,11 @@ def main() -> None:
             "committee_action",
             "committee_size_pct",
             "debate_status",
-            "judge_decision",
+            "bull_conviction",
+            "bear_conviction",
+            "judge_action",
             "judge_confidence",
+            "validation_status",
             "qualitative_risk_status",
             "action",
             "size_pct",
