@@ -428,11 +428,360 @@ def _safe_div(a: float | None, b: float | None) -> float | None:
     return a / b
 
 
-def fetch_fundamentals(ticker: str, as_of_date: date, price: float) -> dict[str, Any]:
-    """Conservative point-in-time fundamentals from SEC annual filings.
 
-    All flow metrics are aligned to the SAME fiscal-year end. Alternate XBRL
-    concepts are selected by recency, not by taxonomy-list order.
+def _quarterly_ytd_records(
+    entries: list[dict[str, Any]],
+    as_of_date: date,
+) -> list[dict[str, Any]]:
+    """Return one best YTD record for each historical 10-Q period end.
+
+    SEC Company Facts often contains both the discrete quarter and the
+    year-to-date value for Q2/Q3. For the same period end/fiscal-period label,
+    the longest-duration record is the YTD observation we need for TTM
+    reconstruction. Q1 is naturally both quarter and YTD.
+    """
+    best: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for e in entries:
+        if e.get("form") not in {"10-Q", "10-Q/A"}:
+            continue
+        if not _filed_on_or_before(e, as_of_date):
+            continue
+
+        fp = str(e.get("fp") or "").upper()
+        if fp not in {"Q1", "Q2", "Q3"}:
+            continue
+
+        start = e.get("start")
+        end = e.get("end")
+        if not start or not end:
+            continue
+
+        try:
+            duration = (_as_date(end) - _as_date(start)).days
+        except Exception:
+            continue
+
+        # Q1 is roughly one quarter; Q2/Q3 YTD grows from there. Very short
+        # records are likely discrete fragments and >310d is not a 10-Q YTD.
+        if duration < 60 or duration > 310:
+            continue
+
+        key = (str(end), fp)
+        old = best.get(key)
+        if old is None:
+            best[key] = e
+            continue
+
+        try:
+            old_duration = (
+                _as_date(old["end"]) - _as_date(old["start"])
+            ).days
+        except Exception:
+            old_duration = -1
+
+        new_score = (duration, str(e.get("filed", "")))
+        old_score = (old_duration, str(old.get("filed", "")))
+        if new_score > old_score:
+            best[key] = e
+
+    return sorted(
+        best.values(),
+        key=lambda x: (str(x.get("end", "")), str(x.get("filed", ""))),
+    )
+
+
+def _record_audit(entry: dict[str, Any] | None) -> dict[str, Any] | None:
+    if entry is None:
+        return None
+    return {
+        "form": entry.get("form"),
+        "filed": entry.get("filed"),
+        "start": entry.get("start"),
+        "end": entry.get("end"),
+        "fy": entry.get("fy"),
+        "fp": entry.get("fp"),
+        "val": _value(entry),
+        "accn": entry.get("accn"),
+    }
+
+
+def _ttm_candidates_for_entries(
+    entries: list[dict[str, Any]],
+    as_of_date: date,
+) -> list[dict[str, Any]]:
+    """Build point-in-time TTM candidates from one SEC taxonomy concept.
+
+    At a fiscal year-end, the 10-K annual value is itself TTM.
+
+    After a Q1/Q2/Q3 filing:
+        TTM = latest annual 10-K + current YTD 10-Q - prior-year comparable YTD
+
+    This avoids mixing discrete-quarter and YTD values and works for non-calendar
+    fiscal years and 52/53-week issuers.
+    """
+    annuals = _annual_flow_records(entries, as_of_date)
+    ytds = _quarterly_ytd_records(entries, as_of_date)
+
+    candidates: list[dict[str, Any]] = []
+
+    for annual in annuals:
+        value = _value(annual)
+        if value is None:
+            continue
+        candidates.append(
+            {
+                "end": str(annual.get("end")),
+                "filed": str(annual.get("filed", "")),
+                "value": value,
+                "method": "annual_10k",
+                "annual": annual,
+                "current_ytd": None,
+                "prior_ytd": None,
+            }
+        )
+
+    for current in ytds:
+        current_value = _value(current)
+        if current_value is None:
+            continue
+
+        current_end = _as_date(current["end"])
+        current_start = _as_date(current["start"])
+        current_duration = (current_end - current_start).days
+
+        preceding_annuals = []
+        for annual in annuals:
+            annual_end = _as_date(annual["end"])
+            gap = (current_end - annual_end).days
+            if 45 <= gap <= 310:
+                preceding_annuals.append(annual)
+
+        if not preceding_annuals:
+            continue
+
+        annual = max(
+            preceding_annuals,
+            key=lambda x: (
+                str(x.get("end", "")),
+                str(x.get("filed", "")),
+            ),
+        )
+        annual_value = _value(annual)
+        if annual_value is None:
+            continue
+
+        comparable: list[tuple[int, int, str, dict[str, Any]]] = []
+        for prior in ytds:
+            if prior is current:
+                continue
+            if str(prior.get("fp") or "").upper() != str(
+                current.get("fp") or ""
+            ).upper():
+                continue
+
+            prior_end = _as_date(prior["end"])
+            year_gap = (current_end - prior_end).days
+            if not 300 <= year_gap <= 430:
+                continue
+
+            prior_start = _as_date(prior["start"])
+            prior_duration = (prior_end - prior_start).days
+            duration_gap = abs(current_duration - prior_duration)
+            if duration_gap > 45:
+                continue
+
+            comparable.append(
+                (
+                    abs(year_gap - 365),
+                    duration_gap,
+                    str(prior.get("filed", "")),
+                    prior,
+                )
+            )
+
+        if not comparable:
+            continue
+
+        comparable.sort(key=lambda x: (x[0], x[1], x[2]))
+        prior = comparable[0][3]
+        prior_value = _value(prior)
+        if prior_value is None:
+            continue
+
+        value = annual_value + current_value - prior_value
+        used_filed = max(
+            str(annual.get("filed", "")),
+            str(current.get("filed", "")),
+            str(prior.get("filed", "")),
+        )
+        candidates.append(
+            {
+                "end": str(current.get("end")),
+                "filed": used_filed,
+                "value": value,
+                "method": "annual_plus_current_ytd_minus_prior_ytd",
+                "annual": annual,
+                "current_ytd": current,
+                "prior_ytd": prior,
+            }
+        )
+
+    best: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        end = candidate["end"]
+        old = best.get(end)
+        if old is None:
+            best[end] = candidate
+            continue
+        # Prefer the most recently filed candidate; on a tie prefer a
+        # reconstructed intra-year TTM over the stale annual-only snapshot.
+        new_score = (
+            str(candidate.get("filed", "")),
+            candidate.get("method") != "annual_10k",
+        )
+        old_score = (
+            str(old.get("filed", "")),
+            old.get("method") != "annual_10k",
+        )
+        if new_score > old_score:
+            best[end] = candidate
+
+    return sorted(best.values(), key=lambda x: str(x["end"]))
+
+
+def _ttm_series_from_concepts(
+    facts: dict[str, Any],
+    concepts: list[tuple[str, str]],
+    as_of_date: date,
+) -> list[dict[str, Any]]:
+    """Merge valid TTM candidates across alternate SEC taxonomy concepts."""
+    best: dict[str, dict[str, Any]] = {}
+
+    for namespace, concept in concepts:
+        concept_name = f"{namespace}:{concept}"
+        entries = _concept_entries(facts, namespace, concept)
+        for candidate in _ttm_candidates_for_entries(entries, as_of_date):
+            candidate = dict(candidate)
+            candidate["concept"] = concept_name
+            end = candidate["end"]
+            old = best.get(end)
+            if old is None:
+                best[end] = candidate
+                continue
+            new_score = (
+                str(candidate.get("filed", "")),
+                candidate.get("method") != "annual_10k",
+            )
+            old_score = (
+                str(old.get("filed", "")),
+                old.get("method") != "annual_10k",
+            )
+            if new_score > old_score:
+                best[end] = candidate
+
+    return sorted(best.values(), key=lambda x: str(x["end"]))
+
+
+def _ttm_candidate_for_end(
+    candidates: list[dict[str, Any]],
+    period_end: str,
+) -> dict[str, Any] | None:
+    matches = [c for c in candidates if str(c.get("end")) == period_end]
+    if not matches:
+        return None
+    return max(matches, key=lambda c: str(c.get("filed", "")))
+
+
+def _prior_common_ttm_end(
+    common_ends: list[str],
+    current_end: str,
+) -> str | None:
+    current = _as_date(current_end)
+    options: list[tuple[int, str]] = []
+    for end in common_ends:
+        if end >= current_end:
+            continue
+        gap = (current - _as_date(end)).days
+        if 300 <= gap <= 430:
+            options.append((abs(gap - 365), end))
+    if not options:
+        return None
+    options.sort()
+    return options[0][1]
+
+
+def _instant_record_all_filings(
+    entries: list[dict[str, Any]],
+    as_of_date: date,
+    preferred_end: str | None = None,
+) -> dict[str, Any] | None:
+    candidates = [
+        e
+        for e in entries
+        if e.get("form") in {"10-K", "10-K/A", "10-Q", "10-Q/A"}
+        and _filed_on_or_before(e, as_of_date)
+    ]
+    if preferred_end is not None:
+        candidates = [
+            e for e in candidates if str(e.get("end")) == preferred_end
+        ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda e: (
+            str(e.get("end", "")),
+            str(e.get("filed", "")),
+        ),
+    )
+
+
+def _best_instant_all_filings(
+    facts: dict[str, Any],
+    concepts: list[tuple[str, str]],
+    as_of_date: date,
+    preferred_end: str | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    best_record: dict[str, Any] | None = None
+    best_name: str | None = None
+    best_key = ("", "")
+
+    for namespace, concept in concepts:
+        rec = _instant_record_all_filings(
+            _concept_entries(facts, namespace, concept),
+            as_of_date,
+            preferred_end,
+        )
+        if rec is None:
+            continue
+        key = (str(rec.get("end", "")), str(rec.get("filed", "")))
+        if key > best_key:
+            best_record = rec
+            best_name = f"{namespace}:{concept}"
+            best_key = key
+
+    return best_record, best_name
+
+
+def _ttm_component_audit(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "method": candidate.get("method"),
+        "concept": candidate.get("concept"),
+        "ttm_end": candidate.get("end"),
+        "available_by": candidate.get("filed"),
+        "annual": _record_audit(candidate.get("annual")),
+        "current_ytd": _record_audit(candidate.get("current_ytd")),
+        "prior_ytd": _record_audit(candidate.get("prior_ytd")),
+    }
+
+
+def fetch_fundamentals(ticker: str, as_of_date: date, price: float) -> dict[str, Any]:
+    """Point-in-time TTM fundamentals reconstructed from SEC 10-K + 10-Q.
+
+    Flow metrics use only filings available on or before as_of_date. Balance
+    metrics use the latest 10-Q/10-K balance-sheet period available by that
+    date. Every component used in the reconstruction is retained for audit.
     """
     facts = _company_facts(ticker)
 
@@ -445,16 +794,21 @@ def fetch_fundamentals(ticker: str, as_of_date: date, price: float) -> dict[str,
         ("us-gaap", "NetIncomeLoss"),
         ("us-gaap", "ProfitLoss"),
     ]
-    eps_concepts = [("us-gaap", "EarningsPerShareDiluted")]
     equity_concepts = [
         ("us-gaap", "StockholdersEquity"),
-        ("us-gaap", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"),
+        (
+            "us-gaap",
+            "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+        ),
     ]
     current_assets_concepts = [("us-gaap", "AssetsCurrent")]
     current_liabilities_concepts = [("us-gaap", "LiabilitiesCurrent")]
     debt_noncurrent_concepts = [
         ("us-gaap", "LongTermDebtNoncurrent"),
-        ("us-gaap", "LongTermDebtAndFinanceLeaseObligationsNoncurrent"),
+        (
+            "us-gaap",
+            "LongTermDebtAndFinanceLeaseObligationsNoncurrent",
+        ),
     ]
     debt_current_concepts = [
         ("us-gaap", "LongTermDebtCurrent"),
@@ -466,77 +820,89 @@ def fetch_fundamentals(ticker: str, as_of_date: date, price: float) -> dict[str,
         ("us-gaap", "CommonStockSharesOutstanding"),
     ]
 
-    revenues, revenue_concept = _best_annual_series(
+    revenue_ttm = _ttm_series_from_concepts(
         facts, revenue_concepts, as_of_date
     )
-    earnings, net_income_concept = _best_annual_series(
+    earnings_ttm = _ttm_series_from_concepts(
         facts, net_income_concepts, as_of_date
     )
-    eps, eps_concept = _best_annual_series(facts, eps_concepts, as_of_date)
 
-    if not revenues or not earnings:
+    common_ends = sorted(
+        {str(x["end"]) for x in revenue_ttm}
+        & {str(x["end"]) for x in earnings_ttm}
+    )
+    if not common_ends:
         raise RuntimeError(
-            f"No hay suficientes datos anuales SEC point-in-time para {ticker} a {as_of_date}."
+            f"SEC sin periodo TTM común de ingresos/beneficio para "
+            f"{ticker} a {as_of_date}."
         )
 
-    # Revenue and net income MUST refer to the same fiscal year.
-    revenue_ends = {str(r.get("end")) for r in revenues}
-    earnings_ends = {str(r.get("end")) for r in earnings}
-    common_periods = sorted(revenue_ends & earnings_ends, reverse=True)
-    if not common_periods:
+    ttm_end = common_ends[-1]
+    revenue_candidate = _ttm_candidate_for_end(revenue_ttm, ttm_end)
+    earnings_candidate = _ttm_candidate_for_end(earnings_ttm, ttm_end)
+    if revenue_candidate is None or earnings_candidate is None:
         raise RuntimeError(
-            f"SEC sin periodo anual común de ingresos/beneficio para {ticker} a {as_of_date}."
+            f"No se pudo materializar TTM {ttm_end} para {ticker}."
         )
 
-    period_end = common_periods[0]
-    rev0 = _record_for_end(revenues, period_end)
-    ni0 = _record_for_end(earnings, period_end)
-    eps0 = _record_for_end(eps, period_end) if eps else None
-    if rev0 is None or ni0 is None:
-        raise RuntimeError(
-            f"No se pudo alinear el periodo fiscal {period_end} para {ticker}."
-        )
-
-    period_end_date = _as_date(period_end)
-    age_days = (as_of_date - period_end_date).days
-    if age_days > 550:
+    ttm_end_date = _as_date(ttm_end)
+    ttm_age_days = (as_of_date - ttm_end_date).days
+    if ttm_age_days > 550:
         raise RuntimeError(
             f"Datos fundamentales SEC demasiado antiguos para {ticker}: "
-            f"periodo={period_end}, as_of={as_of_date}, antigüedad={age_days} días."
+            f"TTM={ttm_end}, as_of={as_of_date}, antigüedad={ttm_age_days} días."
         )
 
-    prior_rev = _prior_record(revenues, period_end)
-    prior_ni = _prior_record(earnings, period_end)
+    revenue = float(revenue_candidate["value"])
+    net_income = float(earnings_candidate["value"])
 
-    filing_dates = [
-        str(x.get("filed", ""))
-        for x in (rev0, ni0, eps0)
-        if x is not None and x.get("filed")
-    ]
-    filing_date = max(filing_dates) if filing_dates else None
+    prior_ttm_end = _prior_common_ttm_end(common_ends, ttm_end)
+    prior_revenue = None
+    prior_net_income = None
+    if prior_ttm_end is not None:
+        prior_rev_candidate = _ttm_candidate_for_end(
+            revenue_ttm, prior_ttm_end
+        )
+        prior_ni_candidate = _ttm_candidate_for_end(
+            earnings_ttm, prior_ttm_end
+        )
+        if prior_rev_candidate is not None:
+            prior_revenue = float(prior_rev_candidate["value"])
+        if prior_ni_candidate is not None:
+            prior_net_income = float(prior_ni_candidate["value"])
 
-    revenue = _value(rev0)
-    net_income = _value(ni0)
-    prior_revenue = _value(prior_rev)
-    prior_net_income = _value(prior_ni)
-    diluted_eps = _value(eps0)
+    # Anchor all balance-sheet metrics to the latest equity period available,
+    # then require other balance facts to match that exact period end.
+    equity_rec, equity_concept = _best_instant_all_filings(
+        facts, equity_concepts, as_of_date, None
+    )
+    if equity_rec is None:
+        raise RuntimeError(
+            f"SEC sin equity 10-Q/10-K point-in-time para {ticker} a {as_of_date}."
+        )
+    balance_period_end = str(equity_rec.get("end"))
 
-    equity_rec, equity_concept = _best_instant_from_concepts(
-        facts, equity_concepts, as_of_date, period_end
+    current_assets_rec, current_assets_concept = _best_instant_all_filings(
+        facts, current_assets_concepts, as_of_date, balance_period_end
     )
-    current_assets_rec, _ = _best_instant_from_concepts(
-        facts, current_assets_concepts, as_of_date, period_end
+    current_liabilities_rec, current_liabilities_concept = (
+        _best_instant_all_filings(
+            facts,
+            current_liabilities_concepts,
+            as_of_date,
+            balance_period_end,
+        )
     )
-    current_liabilities_rec, _ = _best_instant_from_concepts(
-        facts, current_liabilities_concepts, as_of_date, period_end
+    debt_noncurrent_rec, debt_noncurrent_concept = _best_instant_all_filings(
+        facts, debt_noncurrent_concepts, as_of_date, balance_period_end
     )
-    debt_noncurrent_rec, _ = _best_instant_from_concepts(
-        facts, debt_noncurrent_concepts, as_of_date, period_end
+    debt_current_rec, debt_current_concept = _best_instant_all_filings(
+        facts, debt_current_concepts, as_of_date, balance_period_end
     )
-    debt_current_rec, _ = _best_instant_from_concepts(
-        facts, debt_current_concepts, as_of_date, period_end
-    )
-    shares_rec, shares_concept = _best_instant_from_concepts(
+
+    # Shares outstanding is a cover-page fact and can legitimately have an
+    # "as of" date after the balance-sheet period end but before the filing.
+    shares_rec, shares_concept = _best_instant_all_filings(
         facts, shares_concepts, as_of_date, None
     )
 
@@ -545,6 +911,7 @@ def fetch_fundamentals(ticker: str, as_of_date: date, price: float) -> dict[str,
     current_liabilities = _value(current_liabilities_rec)
     debt_noncurrent = _value(debt_noncurrent_rec)
     debt_current = _value(debt_current_rec)
+
     if debt_noncurrent is None and debt_current is None:
         total_debt = None
     else:
@@ -555,46 +922,116 @@ def fetch_fundamentals(ticker: str, as_of_date: date, price: float) -> dict[str,
 
     profit_margin = _safe_div(net_income, revenue)
     roe = _safe_div(net_income, equity)
+    trailing_pe = _safe_div(market_cap, net_income)
 
-    # Catch obvious cross-period/taxonomy corruption before an LLM sees it.
     if profit_margin is not None and abs(profit_margin) > 1.5:
         raise RuntimeError(
-            f"Margen fundamental no plausible para {ticker} ({profit_margin:.2%}); "
+            f"Margen TTM no plausible para {ticker} ({profit_margin:.2%}); "
             "se aborta para evitar contaminar el backtest."
         )
 
+    used_filing_dates = [
+        str(revenue_candidate.get("filed", "")),
+        str(earnings_candidate.get("filed", "")),
+        str(equity_rec.get("filed", "")),
+    ]
+    if shares_rec is not None:
+        used_filing_dates.append(str(shares_rec.get("filed", "")))
+    filing_date = max(x for x in used_filing_dates if x)
+
+    balance_records = [
+        equity_rec,
+        current_assets_rec,
+        current_liabilities_rec,
+        debt_noncurrent_rec,
+        debt_current_rec,
+    ]
+    balance_filing_dates = [
+        str(x.get("filed", ""))
+        for x in balance_records
+        if x is not None and x.get("filed")
+    ]
+    balance_forms = sorted(
+        {
+            str(x.get("form"))
+            for x in balance_records
+            if x is not None and x.get("form")
+        }
+    )
+
+    ttm_method = (
+        revenue_candidate["method"]
+        if revenue_candidate["method"] == earnings_candidate["method"]
+        else (
+            f"revenue:{revenue_candidate['method']}|"
+            f"earnings:{earnings_candidate['method']}"
+        )
+    )
+
     return {
         "ticker": ticker,
-        "source": "SEC Company Facts (annual 10-K, point-in-time)",
+        "source": "SEC Company Facts (TTM 10-K + 10-Q, point-in-time)",
+        "fundamental_mode": "ttm_10k_10q",
         "filing_date": filing_date,
-        "report_period": period_end,
-        "report_age_days": age_days,
-        "revenue_concept": revenue_concept,
-        "net_income_concept": net_income_concept,
-        "eps_concept": eps_concept,
-        "equity_concept": equity_concept,
+        "report_period": ttm_end,
+        "report_age_days": ttm_age_days,
+        "ttm_end": ttm_end,
+        "ttm_method": ttm_method,
+        "prior_ttm_end": prior_ttm_end,
+        "revenue_concept": revenue_candidate.get("concept"),
+        "net_income_concept": earnings_candidate.get("concept"),
+        "revenue_ttm_components": _ttm_component_audit(revenue_candidate),
+        "net_income_ttm_components": _ttm_component_audit(
+            earnings_candidate
+        ),
+        "balance_period_end": balance_period_end,
+        "balance_filing_date": (
+            max(balance_filing_dates) if balance_filing_dates else None
+        ),
+        "balance_forms": balance_forms,
+        "balance_concepts": {
+            "equity": equity_concept,
+            "current_assets": current_assets_concept,
+            "current_liabilities": current_liabilities_concept,
+            "debt_noncurrent": debt_noncurrent_concept,
+            "debt_current": debt_current_concept,
+        },
         "shares_concept": shares_concept,
+        "shares_period_end": (
+            str(shares_rec.get("end")) if shares_rec is not None else None
+        ),
+        "shares_filing_date": (
+            str(shares_rec.get("filed")) if shares_rec is not None else None
+        ),
+        "shares_form": (
+            str(shares_rec.get("form")) if shares_rec is not None else None
+        ),
         "price_at_decision": price,
         "revenue": revenue,
         "net_income": net_income,
-        "diluted_eps": diluted_eps,
+        "prior_ttm_revenue": prior_revenue,
+        "prior_ttm_net_income": prior_net_income,
         "equity": equity,
         "total_debt": total_debt,
         "shares_outstanding": shares,
-        "trailingPE": _safe_div(price, diluted_eps),
+        # P/E is reconstructed from decision-date market cap / TTM earnings.
+        # This avoids combining current prices with stale annual EPS.
+        "trailingPE": trailing_pe,
         "priceToBook": _safe_div(market_cap, equity),
         "returnOnEquity": roe,
         "profitMargins": profit_margin,
         "debtToEquity": _safe_div(total_debt, equity),
-        "currentRatio": _safe_div(current_assets, current_liabilities),
+        "currentRatio": _safe_div(
+            current_assets, current_liabilities
+        ),
         "revenueGrowth": (
             revenue / prior_revenue - 1.0
-            if revenue is not None and prior_revenue not in (None, 0)
+            if prior_revenue not in (None, 0)
             else None
         ),
         "earningsGrowth": (
             net_income / prior_net_income - 1.0
-            if net_income is not None and prior_net_income not in (None, 0)
+            if prior_net_income not in (None, 0)
             else None
         ),
     }
