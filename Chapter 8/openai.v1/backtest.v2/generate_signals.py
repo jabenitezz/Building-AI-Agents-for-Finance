@@ -35,7 +35,7 @@ CSV_FIELDS = [
     "debate_status", "bull_case", "bull_conviction",
     "bear_case", "bear_conviction", "devil_critique",
     "judge_verdict", "judge_action", "judge_confidence", "judge_rationale",
-    "validation_status",
+    "validation_status", "conviction_gap",
     "action", "confidence", "size_pct", "final_decision",
     "price_at_decision", "fundamentals_source", "fundamentals_filing_date",
     "fundamentals_report_period", "trailing_pe", "price_to_book",
@@ -158,6 +158,11 @@ def _flatten(
         "judge_confidence": result["judge_confidence"],
         "judge_rationale": result["judge_rationale"],
         "validation_status": result["validation_status"],
+        "conviction_gap": (
+            result["bull_conviction"] - result["bear_conviction"]
+            if result["debate_status"] == "RUN"
+            else ""
+        ),
         "action": result["final_action"],
         "confidence": result["pm_confidence"],
         "size_pct": result["final_size_pct"],
