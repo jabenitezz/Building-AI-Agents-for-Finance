@@ -63,12 +63,15 @@ class DebateState(TypedDict):
     pm_confidence: int
     pm_size_pct: float
     bull_case: str
+    bull_conviction: int
     bear_case: str
+    bear_conviction: int
     devil_critique: str
     judge_verdict: str
-    judge_decision: str
+    judge_action: str
     judge_confidence: int
     judge_rationale: str
+    validation_status: str
 
 
 _CONTROL_LINE_RE = re.compile(
@@ -77,8 +80,10 @@ _CONTROL_LINE_RE = re.compile(
     r"SIZE_PCT\s*=\s*[\d.]+\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
-_JUDGE_DECISION_RE = re.compile(
-    r"VERDICT\s*=\s*(APPROVED|REJECTED)", re.IGNORECASE
+_BULL_CONV_RE = re.compile(r"BULL_CONVICTION\s*=\s*(\d+)", re.IGNORECASE)
+_BEAR_CONV_RE = re.compile(r"BEAR_CONVICTION\s*=\s*(\d+)", re.IGNORECASE)
+_JUDGE_ACTION_RE = re.compile(
+    r"VERDICT\s*=\s*(BUY|HOLD|SELL)", re.IGNORECASE
 )
 _JUDGE_CONF_RE = re.compile(r"CONFIDENCE\s*=\s*(\d+)", re.IGNORECASE)
 _JUDGE_RATIONALE_RE = re.compile(
@@ -216,8 +221,14 @@ def bull_node(state: DebateState) -> dict:
         ]
     )
     value = message_text(out)
-    trace("pit-v2/debate/bull", f"DONE preview={value[:140]!r}")
-    return {"bull_case": value}
+    match = _BULL_CONV_RE.search(value)
+    conviction = int(match.group(1)) if match else 0
+    conviction = max(0, min(100, conviction))
+    trace(
+        "pit-v2/debate/bull",
+        f"DONE conviction={conviction} preview={value[:140]!r}",
+    )
+    return {"bull_case": value, "bull_conviction": conviction}
 
 
 def bear_node(state: DebateState) -> dict:
@@ -229,8 +240,14 @@ def bear_node(state: DebateState) -> dict:
         ]
     )
     value = message_text(out)
-    trace("pit-v2/debate/bear", f"DONE preview={value[:140]!r}")
-    return {"bear_case": value}
+    match = _BEAR_CONV_RE.search(value)
+    conviction = int(match.group(1)) if match else 0
+    conviction = max(0, min(100, conviction))
+    trace(
+        "pit-v2/debate/bear",
+        f"DONE conviction={conviction} preview={value[:140]!r}",
+    )
+    return {"bear_case": value, "bear_conviction": conviction}
 
 
 def devil_node(state: DebateState) -> dict:
@@ -262,14 +279,16 @@ def devil_node(state: DebateState) -> dict:
     return {"devil_critique": value}
 
 
-def _parse_judge(value: str) -> tuple[str, int, str]:
-    dm = _JUDGE_DECISION_RE.search(value)
+def _parse_judge(value: str) -> tuple[str, int, str, str]:
+    am = _JUDGE_ACTION_RE.search(value)
     cm = _JUDGE_CONF_RE.search(value)
     rm = _JUDGE_RATIONALE_RE.search(value)
-    decision = dm.group(1).upper() if dm else "REJECTED"
+    action = am.group(1).upper() if am else "HOLD"
     confidence = int(cm.group(1)) if cm else 0
+    confidence = max(0, min(100, confidence))
     rationale = rm.group(1).strip() if rm else value.strip()
-    return decision, confidence, rationale
+    validation_status = "APPROVED" if action == "BUY" else "REJECTED"
+    return action, confidence, rationale, validation_status
 
 
 def judge_node(state: DebateState) -> dict:
@@ -278,16 +297,17 @@ def judge_node(state: DebateState) -> dict:
         content=(
             "Eres un Juez NEUTRAL que valida una tesis de inversión ya dimensionada por "
             "el Portfolio Manager. NO eres un segundo Portfolio Manager: no puedes "
-            "cambiar ACTION, CONFIDENCE ni SIZE_PCT y no puedes proponer una posición "
-            "alternativa. Tu única tarea es decidir si la propuesta BUY sobrevive al "
-            "stress-test adversarial.\n\n"
-            "APPROVED si la tesis central sigue apoyada por la evidencia después de "
-            "considerar el mejor caso Bear y la crítica del Abogado del Diablo. "
-            "REJECTED si una premisa central carece de apoyo, existe una contradicción "
-            "material no resuelta o la evidencia es insuficiente para sostener el BUY. "
-            "La mera existencia de riesgos no implica REJECTED.\n\n"
+            "cambiar ACTION, CONFIDENCE ni SIZE_PCT y no puedes proponer un tamaño "
+            "alternativo. Tu tarea es emitir el veredicto direccional del debate sobre "
+            "una propuesta BUY ya dimensionada.\n\n"
+            "VERDICT=BUY significa que la tesis sobrevive al stress-test y puede "
+            "validarse sin cambiar el SIZE_PCT del PM. VERDICT=HOLD significa que la "
+            "evidencia no justifica entrar ahora. VERDICT=SELL significa que la "
+            "evidencia es activamente contraria a mantener exposición larga. HOLD y "
+            "SELL rechazan la entrada en esta estrategia long-only; no abren shorts. "
+            "La mera existencia de riesgos no obliga a HOLD o SELL.\n\n"
             "Responde ESTRICTAMENTE:\n"
-            "VERDICT=<APPROVED|REJECTED>\n"
+            "VERDICT=<BUY|HOLD|SELL>\n"
             "CONFIDENCE=<0-100>\n"
             "RATIONALE=<2-4 frases en español>"
         )
@@ -307,13 +327,17 @@ def judge_node(state: DebateState) -> dict:
     )
     out = judge_model.invoke([sys, msg])
     verdict = message_text(out)
-    decision, confidence, rationale = _parse_judge(verdict)
-    trace("pit-v2/debate/judge", f"DONE decision={decision} confidence={confidence}")
+    action, confidence, rationale, validation_status = _parse_judge(verdict)
+    trace(
+        "pit-v2/debate/judge",
+        f"DONE action={action} validation={validation_status} confidence={confidence}",
+    )
     return {
         "judge_verdict": verdict,
-        "judge_decision": decision,
+        "judge_action": action,
         "judge_confidence": confidence,
         "judge_rationale": rationale,
+        "validation_status": validation_status,
     }
 
 
@@ -390,12 +414,15 @@ def run_pipeline_as_of(
             "hard_risk_reason": hard_reason,
             "debate_status": "",
             "bull_case": "",
+            "bull_conviction": 0,
             "bear_case": "",
+            "bear_conviction": 0,
             "devil_critique": "",
             "judge_verdict": "",
-            "judge_decision": "",
+            "judge_action": "",
             "judge_confidence": 0,
             "judge_rationale": "",
+            "validation_status": "NOT_RUN",
             "qualitative_risk_status": "SKIPPED",
             "qualitative_risk_verdict": "",
             "committee_action": action,
@@ -446,24 +473,30 @@ def run_pipeline_as_of(
         "pm_confidence": confidence,
         "pm_size_pct": size_pct,
         "bull_case": "",
+        "bull_conviction": 0,
         "bear_case": "",
+        "bear_conviction": 0,
         "devil_critique": "",
         "judge_verdict": "",
-        "judge_decision": "",
+        "judge_action": "",
         "judge_confidence": 0,
         "judge_rationale": "",
+        "validation_status": "NOT_RUN",
     }
     debate = build_debate().invoke(debate_initial)
     result.update(
         {
             "debate_status": "RUN",
             "bull_case": debate["bull_case"],
+            "bull_conviction": debate["bull_conviction"],
             "bear_case": debate["bear_case"],
+            "bear_conviction": debate["bear_conviction"],
             "devil_critique": debate["devil_critique"],
             "judge_verdict": debate["judge_verdict"],
-            "judge_decision": debate["judge_decision"],
+            "judge_action": debate["judge_action"],
             "judge_confidence": debate["judge_confidence"],
             "judge_rationale": debate["judge_rationale"],
+            "validation_status": debate["validation_status"],
         }
     )
 
@@ -490,15 +523,17 @@ def run_pipeline_as_of(
 
     if (
         result["committee_action"] == "BUY"
-        and result["judge_decision"] == "APPROVED"
+        and result["validation_status"] == "APPROVED"
     ):
         result["final_action"] = "BUY"
         result["final_size_pct"] = size_pct
         result["final_decision"] = "BUY"
-    elif result["judge_decision"] == "REJECTED":
+    elif result["validation_status"] == "REJECTED":
         result["final_action"] = "HOLD"
         result["final_size_pct"] = 0.0
-        result["final_decision"] = "HOLD (judge rejected)"
+        result["final_decision"] = (
+            f"HOLD (judge verdict={result['judge_action']})"
+        )
     else:
         result["final_action"] = "HOLD"
         result["final_size_pct"] = 0.0
