@@ -73,15 +73,19 @@ def fundamentals_analyst(state: PITCommitteeState) -> dict:
     data = fetch_fundamentals(ticker, as_of, price)
     trace(
         "pit/fundamentals",
-        f"DATA filing={data.get('filing_date')} period={data.get('report_period')} "
+        f"DATA mode={data.get('fundamental_mode')} filing={data.get('filing_date')} "
+        f"ttm_end={data.get('ttm_end')} balance_end={data.get('balance_period_end')} "
         f"PE={data.get('trailingPE')} ROE={data.get('returnOnEquity')}",
     )
     sys = SystemMessage(content=(
         "Eres un analista fundamental senior. Estás realizando un backtest histórico. "
-        "NO conoces información posterior a la fecha indicada. Los datos proceden del "
-        "último 10-K que ya había sido presentado a la SEC en esa fecha. Escribe TODO "
-        "en español, máximo 150 palabras. Evalúa valoración, rentabilidad, balance y "
-        "crecimiento. No inventes datos ni utilices conocimiento posterior. Concluye "
+        "NO conoces información posterior a la fecha indicada. Los datos proceden "
+        "exclusivamente de filings SEC 10-K/10-Q ya presentados en esa fecha. Los "
+        "flujos (ingresos y beneficio) están reconstruidos TTM y el balance usa el "
+        "último periodo 10-Q/10-K disponible. La trazabilidad de los componentes SEC "
+        "se incluye en los datos. Escribe TODO en español, máximo 150 palabras. Evalúa "
+        "valoración, rentabilidad, balance y crecimiento. No inventes datos ni utilices "
+        "conocimiento posterior. Concluye "
         "con BULLISH / NEUTRAL / BEARISH en fundamentales."
     ))
     msg = HumanMessage(content=(
