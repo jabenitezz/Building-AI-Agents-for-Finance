@@ -20,7 +20,10 @@ Architecture:
      Devil's Advocate
            |
          Judge
-    APPROVED / REJECTED
+      BUY / HOLD / SELL
+           |
+   derived validation
+  APPROVED / REJECTED
            |
     qualitative macro-risk gate
            |
@@ -49,7 +52,8 @@ Their structured outputs include:
 
 These values are stored for audit and later analysis only. They do not resize
 the PM position. The backtest also records conviction_gap =
-bull_conviction - bear_conviction as a diagnostic.
+bull_conviction - bear_conviction as a diagnostic. Conviction/confidence values
+are self-reported model scores, not calibrated probabilities.
 
 The debate only runs for BUY proposals that pass hard risk. HOLD and SELL
 already imply 0% long exposure, so debating them cannot change the long-only
