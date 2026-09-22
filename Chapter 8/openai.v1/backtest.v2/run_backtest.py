@@ -26,6 +26,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--slippage-bps", type=float, default=0.0)
     p.add_argument("--evaluation-end", default=None)
     p.add_argument("--benchmark", default="SPY")
+    p.add_argument(
+        "--equal-buy-size-pct",
+        type=float,
+        default=None,
+        help=(
+            "Tamaño fijo para el diagnóstico Equal-Size BUY. "
+            "Por defecto usa la media de SIZE_PCT de los BUY finales del periodo."
+        ),
+    )
     p.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     return p.parse_args()
 
@@ -250,6 +259,128 @@ def build_mas_portfolio(
         slippage=slippage,
         freq="1D",
     )
+
+
+
+def infer_equal_buy_size_pct(
+    signals: pd.DataFrame,
+    *,
+    action_col: str = "action",
+    size_col: str = "size_pct",
+) -> float:
+    """Fixed BUY size for the sizing diagnostic.
+
+    By default we use the arithmetic mean of the final BUY target sizes in the
+    sample. This is a diagnostic, not a tradable rule: it keeps the average
+    target size per BUY unchanged while removing the PM's time-varying sizing.
+    """
+    buys = signals.loc[
+        signals[action_col].astype(str).str.upper().eq("BUY"),
+        size_col,
+    ]
+    if buys.empty:
+        return 0.0
+    return float(pd.to_numeric(buys, errors="raise").mean())
+
+
+def build_equal_size_buy_portfolio(
+    close_df: pd.DataFrame,
+    open_df: pd.DataFrame,
+    signals: pd.DataFrame,
+    initial_cash: float,
+    fees: float,
+    slippage: float,
+    *,
+    fixed_size_pct: float,
+    action_col: str = "action",
+) -> vbt.Portfolio:
+    """Replay the same final BUY/HOLD/SELL signals with one fixed BUY size."""
+    if fixed_size_pct < 0:
+        raise ValueError("fixed_size_pct no puede ser negativo.")
+
+    diagnostic = signals.copy()
+    diagnostic["_diag_action"] = diagnostic[action_col]
+    diagnostic["_diag_size_pct"] = np.where(
+        diagnostic[action_col].astype(str).str.upper().eq("BUY"),
+        float(fixed_size_pct),
+        0.0,
+    )
+
+    # If there are no BUY signals, keep the long-only portfolio entirely in cash.
+    return build_mas_portfolio(
+        close_df,
+        open_df,
+        diagnostic,
+        initial_cash,
+        fees,
+        slippage,
+        action_col="_diag_action",
+        size_col="_diag_size_pct",
+    )
+
+
+def build_exposure_matched_benchmark(
+    benchmark_open: pd.Series,
+    benchmark_close: pd.Series,
+    signals: pd.DataFrame,
+    initial_cash: float,
+    fees: float,
+    slippage: float,
+    *,
+    action_col: str = "action",
+    size_col: str = "size_pct",
+) -> tuple[vbt.Portfolio, pd.DataFrame]:
+    """Apply MAS's aggregate target exposure schedule to one benchmark.
+
+    At each MAS rebalance date, the benchmark target equals the sum of the
+    final long target weights across all tickers. The rest remains cash.
+    This isolates asset-selection value from the decision to carry little or
+    much market exposure. It matches TARGET exposure at rebalance dates, not
+    realized daily exposure between rebalances.
+    """
+    schedule_rows: list[dict[str, Any]] = []
+    target = pd.Series(np.nan, index=benchmark_close.index, dtype=float)
+
+    for d, group in signals.groupby("execution_date", sort=True):
+        d = pd.Timestamp(d)
+        if d not in target.index:
+            raise RuntimeError(
+                f"Benchmark: execution_date {d.date()} no está en precios."
+            )
+
+        gross_pct = float(
+            group.loc[
+                group[action_col].astype(str).str.upper().eq("BUY"),
+                size_col,
+            ].sum()
+        )
+        if gross_pct < -1e-12:
+            raise ValueError("La exposición agregada no puede ser negativa.")
+        if gross_pct > 100.0 + 1e-9:
+            raise ValueError(
+                f"Exposición agregada {gross_pct:.2f}% > 100% en {d.date()}."
+            )
+
+        target.at[d] = gross_pct / 100.0
+        schedule_rows.append(
+            {
+                "execution_date": d,
+                "target_exposure_pct": gross_pct,
+            }
+        )
+
+    pf = vbt.Portfolio.from_orders(
+        benchmark_close,
+        size=target,
+        size_type="targetpercent",
+        direction="longonly",
+        price=benchmark_open,
+        init_cash=initial_cash,
+        fees=fees,
+        slippage=slippage,
+        freq="1D",
+    )
+    return pf, pd.DataFrame(schedule_rows)
 
 
 def build_buy_hold_portfolio(
@@ -580,6 +711,7 @@ def main() -> None:
     print(f"Slippage         : {args.slippage_bps:.2f} bps")
     print("SIZE_PCT         : target como % del NAV TOTAL")
     print("Judge            : BUY valida; HOLD/SELL vetan; nunca cambia SIZE_PCT")
+    print("Diagnósticos     : Equal-Size BUY + benchmark con target exposure equivalente")
     print("=" * 100)
 
     fees = args.fees_bps / 10_000.0
@@ -615,6 +747,30 @@ def main() -> None:
         action_col="action",
         size_col="size_pct",
     )
+
+    equal_buy_size_pct = (
+        float(args.equal_buy_size_pct)
+        if args.equal_buy_size_pct is not None
+        else infer_equal_buy_size_pct(
+            signals,
+            action_col="action",
+            size_col="size_pct",
+        )
+    )
+    if equal_buy_size_pct < 0:
+        raise ValueError("--equal-buy-size-pct no puede ser negativo.")
+
+    equal_size_buy = build_equal_size_buy_portfolio(
+        close_df,
+        open_df,
+        signals,
+        args.initial_cash,
+        fees,
+        slippage,
+        fixed_size_pct=equal_buy_size_pct,
+        action_col="action",
+    )
+
     universe_bh = build_buy_hold_portfolio(
         close_df, open_df, args.initial_cash, fees, slippage
     )
@@ -638,10 +794,22 @@ def main() -> None:
         fees,
         slippage,
     )
+    spy_exposure_matched, exposure_schedule = build_exposure_matched_benchmark(
+        spy_open_df[args.benchmark],
+        spy_close_df[args.benchmark],
+        signals,
+        args.initial_cash,
+        fees,
+        slippage,
+        action_col="action",
+        size_col="size_pct",
+    )
 
     portfolios = {
         "MAS Committee Only": committee,
         "MAS + Adversarial": adversarial,
+        f"Equal-Size BUY ({equal_buy_size_pct:.2f}%)": equal_size_buy,
+        f"{args.benchmark} Target-Exposure Matched": spy_exposure_matched,
         f"{args.benchmark} Buy&Hold": spy,
         "Universe Buy&Hold": universe_bh,
         "EqualWeight Rebalanced": equal_weight,
@@ -653,6 +821,31 @@ def main() -> None:
             for name, pf in portfolios.items()
         ]
     )
+
+    print("\n" + "=" * 100)
+    print("DIAGNÓSTICOS DE SEÑAL / SIZING / EXPOSICIÓN")
+    print("=" * 100)
+    print(
+        f"Equal-Size BUY   : mismas señales finales BUY, "
+        f"tamaño fijo={equal_buy_size_pct:.2f}% por BUY."
+    )
+    if args.equal_buy_size_pct is None:
+        print(
+            "                    El tamaño fijo es la media de SIZE_PCT de los BUY "
+            "finales del propio periodo."
+        )
+    else:
+        print("                    Tamaño fijado explícitamente por CLI.")
+    print(
+        f"{args.benchmark} Exposure    : en cada rebalanceo usa la suma de los "
+        "targets BUY finales de MAS; el resto queda en cash."
+    )
+    print(
+        "Interpretación    : Equal-Size aísla el sizing temporal; "
+        "Exposure-Matched ayuda a aislar selección frente al mercado."
+    )
+    print("=" * 100)
+
     print_summary(summary)
 
     judge_effect = build_judge_effect(signals, close_df)
@@ -675,6 +868,21 @@ def main() -> None:
     _trades_frame(committee).to_csv(output_dir / "committee_trades.csv", index=False)
     _orders_frame(adversarial).to_csv(output_dir / "adversarial_orders.csv", index=False)
     _trades_frame(adversarial).to_csv(output_dir / "adversarial_trades.csv", index=False)
+    _orders_frame(equal_size_buy).to_csv(
+        output_dir / "equal_size_buy_orders.csv", index=False
+    )
+    _trades_frame(equal_size_buy).to_csv(
+        output_dir / "equal_size_buy_trades.csv", index=False
+    )
+    _orders_frame(spy_exposure_matched).to_csv(
+        output_dir / "benchmark_exposure_matched_orders.csv", index=False
+    )
+    _trades_frame(spy_exposure_matched).to_csv(
+        output_dir / "benchmark_exposure_matched_trades.csv", index=False
+    )
+    exposure_schedule.to_csv(
+        output_dir / "benchmark_exposure_schedule.csv", index=False
+    )
 
     # Compatibility aliases: MAS is the final adversarial path in v2.
     _orders_frame(adversarial).to_csv(output_dir / "mas_orders.csv", index=False)
@@ -714,6 +922,11 @@ def main() -> None:
         "committee_trades.csv",
         "adversarial_orders.csv",
         "adversarial_trades.csv",
+        "equal_size_buy_orders.csv",
+        "equal_size_buy_trades.csv",
+        "benchmark_exposure_matched_orders.csv",
+        "benchmark_exposure_matched_trades.csv",
+        "benchmark_exposure_schedule.csv",
         "mas_orders.csv",
         "mas_trades.csv",
         "signals_used.csv",
