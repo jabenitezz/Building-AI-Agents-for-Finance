@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+cache/
+output/*.csv
+output/*.parquet
+output/backtest/
