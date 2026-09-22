@@ -11,7 +11,11 @@ Runs a three-agent debate:
 
 import asyncio
 
+from dotenv import load_dotenv
 from llama_index.core.agent.workflow import AgentWorkflow
+
+# Load OPENAI_API_KEY from Chapter 9/.env before the agents create their LLMs.
+load_dotenv()
 
 from .agents import (
     fraud_advocate,
