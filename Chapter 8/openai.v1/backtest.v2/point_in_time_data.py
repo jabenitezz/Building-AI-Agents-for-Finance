@@ -605,8 +605,11 @@ def _ttm_candidates_for_entries(
         if not comparable:
             continue
 
-        comparable.sort(key=lambda x: (x[0], x[1], x[2]))
-        prior = comparable[0][3]
+        best_distance = min((x[0], x[1]) for x in comparable)
+        equally_close = [
+            x for x in comparable if (x[0], x[1]) == best_distance
+        ]
+        prior = max(equally_close, key=lambda x: x[2])[3]
         prior_value = _value(prior)
         if prior_value is None:
             continue
