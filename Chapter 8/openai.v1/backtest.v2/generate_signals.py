@@ -32,8 +32,10 @@ CSV_FIELDS = [
     "hard_risk_status", "hard_risk_reason",
     "qualitative_risk_status", "qualitative_risk_verdict",
     "committee_action", "committee_size_pct", "committee_final_decision",
-    "debate_status", "bull_case", "bear_case", "devil_critique",
-    "judge_verdict", "judge_decision", "judge_confidence", "judge_rationale",
+    "debate_status", "bull_case", "bull_conviction",
+    "bear_case", "bear_conviction", "devil_critique",
+    "judge_verdict", "judge_action", "judge_confidence", "judge_rationale",
+    "validation_status",
     "action", "confidence", "size_pct", "final_decision",
     "price_at_decision", "fundamentals_source", "fundamentals_filing_date",
     "fundamentals_report_period", "trailing_pe", "price_to_book",
@@ -147,12 +149,15 @@ def _flatten(
         "committee_final_decision": result["committee_final_decision"],
         "debate_status": result["debate_status"],
         "bull_case": result["bull_case"],
+        "bull_conviction": result["bull_conviction"],
         "bear_case": result["bear_case"],
+        "bear_conviction": result["bear_conviction"],
         "devil_critique": result["devil_critique"],
         "judge_verdict": result["judge_verdict"],
-        "judge_decision": result["judge_decision"],
+        "judge_action": result["judge_action"],
         "judge_confidence": result["judge_confidence"],
         "judge_rationale": result["judge_rationale"],
+        "validation_status": result["validation_status"],
         "action": result["final_action"],
         "confidence": result["pm_confidence"],
         "size_pct": result["final_size_pct"],
@@ -237,8 +242,11 @@ def print_signal(result: dict[str, Any], row: dict[str, Any], show_reports: bool
     )
     print(f"HARD RISK: {row['hard_risk_status']} | {row['hard_risk_reason']}")
     print(
-        f"DEBATE: {row['debate_status']} | Judge={row['judge_decision'] or 'N/A'} "
-        f"| judge_conf={row['judge_confidence']}"
+        f"DEBATE: {row['debate_status']} | "
+        f"Bull={row['bull_conviction']} | Bear={row['bear_conviction']} | "
+        f"Judge={row['judge_action'] or 'N/A'} | "
+        f"judge_conf={row['judge_confidence']} | "
+        f"validation={row['validation_status']}"
     )
     print(
         f"QUAL RISK: {row['qualitative_risk_status']} | "
@@ -257,10 +265,24 @@ def print_signal(result: dict[str, Any], row: dict[str, Any], show_reports: bool
         print("\n--- Macro ---\n" + result["macro_report"])
         print("\n--- Portfolio Manager ---\n" + result["pm_thesis"])
         if result["debate_status"] == "RUN":
-            print("\n--- BULL ---\n" + result["bull_case"])
-            print("\n--- BEAR ---\n" + result["bear_case"])
+            print(
+                "\n--- BULL ---\n"
+                + result["bull_case"]
+                + f"\n[PARSED BULL_CONVICTION={result['bull_conviction']}]"
+            )
+            print(
+                "\n--- BEAR ---\n"
+                + result["bear_case"]
+                + f"\n[PARSED BEAR_CONVICTION={result['bear_conviction']}]"
+            )
             print("\n--- Abogado del Diablo ---\n" + result["devil_critique"])
-            print("\n--- Judge ---\n" + result["judge_verdict"])
+            print(
+                "\n--- Judge ---\n"
+                + result["judge_verdict"]
+                + f"\n[PARSED VERDICT={result['judge_action']}; "
+                + f"CONFIDENCE={result['judge_confidence']}; "
+                + f"VALIDATION={result['validation_status']}]"
+            )
         print("\n--- Qualitative Risk ---\n" + result.get("qualitative_risk_verdict", ""))
 
 
@@ -286,6 +308,7 @@ def main() -> None:
     print(f"CSV               : {args.output}")
     print("Sizing            : SIZE_PCT es target de NAV; Judge nunca lo modifica.")
     print("Debate            : solo BUY tras hard risk; Bull/Bear usan el mismo modelo.")
+    print("Salida debate     : BULL_CONVICTION / BEAR_CONVICTION / VERDICT BUY|HOLD|SELL.")
     print("=" * 100)
 
     if args.plan_only:
