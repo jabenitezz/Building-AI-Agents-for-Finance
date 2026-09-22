@@ -7,7 +7,8 @@ Design goals
 - Keep Bull and Bear equally capable: same model tier, same reasoning effort,
   same max_tokens. Their only asymmetry is the role prompt.
 - Use the debate as a validation layer, not as a second portfolio manager.
-  The Judge can APPROVE or REJECT a BUY proposal but never resizes it.
+  The Judge returns BUY/HOLD/SELL like the book but never resizes the PM trade:
+  BUY validates; HOLD/SELL reject the long entry.
 - Apply deterministic hard-risk rules before paying for the debate.
 - Keep a committee-only baseline alongside the adversarial result so the
   backtest can measure whether the extra layer adds value.
