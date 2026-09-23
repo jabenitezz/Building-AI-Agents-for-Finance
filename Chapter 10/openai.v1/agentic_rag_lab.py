@@ -68,6 +68,11 @@ Settings.llm = OpenAI(
     max_tokens=OPENAI_MAX_TOKENS,
     timeout=OPENAI_TIMEOUT_SECONDS,
     max_retries=OPENAI_MAX_RETRIES,
+    # Step 6 invokes the async FunctionAgent from separate asyncio.run() calls.
+    # Reusing one AsyncOpenAI/httpx client across those event loops can bind its
+    # connection-pool primitives to the first loop and fail on the next call.
+    # A fresh client per invocation keeps the synchronous lab runner reliable.
+    reuse_client=False,
 )
 Settings.embed_model = OpenAIEmbedding(model=OPENAI_EMBED_MODEL)
 
