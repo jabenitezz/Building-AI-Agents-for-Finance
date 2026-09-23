@@ -1,0 +1,13 @@
+# Local virtual environment
+.venv/
+
+# Real API keys — never commit; use .env.example as the template
+.env
+
+# Python build artifacts
+__pycache__/
+*.pyc
+
+# Generated lab reports
+results/lab_runs/*
+!results/lab_runs/.gitkeep

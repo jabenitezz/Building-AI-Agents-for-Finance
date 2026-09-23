@@ -1,0 +1,6 @@
+# Chapter 10 openai.v1 — OpenAI-only dependencies
+llama-index-core>=0.14.25
+llama-index-llms-openai>=0.8.1
+llama-index-embeddings-openai>=0.6.0
+llama-index-retrievers-bm25>=0.7.0
+python-dotenv>=1.0.0
