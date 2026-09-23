@@ -48,12 +48,14 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
 from llama_index.embeddings.openai import OpenAIEmbedding
-from llama_index.llms.openai import OpenAI
+from llama_index.llms.openai import OpenAIResponses
 
+# Paths are derived from this file's location rather than any machine-specific
+# /home/... or /mnt/... prefix, so the lab can be moved without code changes.
 BASE_DIR = os.path.dirname(__file__)
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "data"))
+DATA_DIR = os.path.join(BASE_DIR, "..", "data")
 
 OPENAI_LLM_MODEL = os.getenv("OPENAI_LLM_MODEL", "gpt-5.6-terra")
 OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "medium")
@@ -62,17 +64,15 @@ OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "4096"))
 OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "180"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
 
-Settings.llm = OpenAI(
+# GPT-5.6 reasoning + function tools must use the Responses API. Using
+# OpenAIResponses preserves reasoning for the agentic/tool-calling step instead
+# of disabling reasoning just to stay on /v1/chat/completions.
+Settings.llm = OpenAIResponses(
     model=OPENAI_LLM_MODEL,
-    reasoning_effort=OPENAI_REASONING_EFFORT,
-    max_tokens=OPENAI_MAX_TOKENS,
+    reasoning_options={"effort": OPENAI_REASONING_EFFORT},
+    max_output_tokens=OPENAI_MAX_TOKENS,
     timeout=OPENAI_TIMEOUT_SECONDS,
     max_retries=OPENAI_MAX_RETRIES,
-    # Step 6 invokes the async FunctionAgent from separate asyncio.run() calls.
-    # Reusing one AsyncOpenAI/httpx client across those event loops can bind its
-    # connection-pool primitives to the first loop and fail on the next call.
-    # A fresh client per invocation keeps the synchronous lab runner reliable.
-    reuse_client=False,
 )
 Settings.embed_model = OpenAIEmbedding(model=OPENAI_EMBED_MODEL)
 
@@ -442,26 +442,16 @@ AGENT_SYSTEM_PROMPT = (
 )
 
 
-def _run_agent_sync(agent: FunctionAgent, task: str):
-    """Run the agent and also collect the chunks it retrieved.
-
-    FunctionAgent.run() must be awaited inside a running event loop, so we wrap it
-    in a coroutine. The agent retrieves indirectly via tool calls, so we stream
-    its ToolCallResult events and pull the source nodes out of each tool output's
-    raw_output (the underlying query-engine Response). Returns (response, nodes).
-    """
+async def _run_agent(agent: FunctionAgent, task: str):
+    """Run one agent task and collect the chunks retrieved by its tool calls."""
     collected: list = []
-
-    async def run_agent():
-        handler = agent.run(task)
-        async for event in handler.stream_events():
-            if isinstance(event, ToolCallResult):
-                raw = getattr(event.tool_output, "raw_output", None)
-                for node in getattr(raw, "source_nodes", None) or []:
-                    collected.append(node)
-        return await handler
-
-    response = asyncio.run(run_agent())
+    handler = agent.run(task)
+    async for event in handler.stream_events():
+        if isinstance(event, ToolCallResult):
+            raw = getattr(event.tool_output, "raw_output", None)
+            for node in getattr(raw, "source_nodes", None) or []:
+                collected.append(node)
+    response = await handler
     return response, collected
 
 
@@ -479,8 +469,15 @@ def step_6_agent(indices: dict[str, VectorStoreIndex]) -> None:
         "policy? Check the quick-ratio rule against Acme's most recent disclosed "
         "quick ratio."
     )
-    task_response, task_nodes = _run_agent_sync(agent, task)
-    comparative, comp_nodes = _run_agent_sync(agent, COMPARISON_QUESTION)
+    # Keep both agent runs inside one event loop. OpenAIResponses owns an async
+    # client, so repeatedly creating/destroying loops with separate asyncio.run()
+    # calls can bind transport primitives to the wrong loop.
+    async def run_both():
+        first = await _run_agent(agent, task)
+        second = await _run_agent(agent, COMPARISON_QUESTION)
+        return first, second
+
+    (task_response, task_nodes), (comparative, comp_nodes) = asyncio.run(run_both())
     _log_comparison(
         "Step 6 — Self-correcting agent (re-queries tools until sufficient)",
         comparative,
