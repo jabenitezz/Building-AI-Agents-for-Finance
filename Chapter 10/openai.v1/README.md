@@ -102,7 +102,14 @@ python -c "from agentic_rag_lab import step_9_hybrid_rerank; step_9_hybrid_reran
 
 ## Notes on compatibility
 
-The OpenAI LLM integration is pinned to a recent LlamaIndex line that knows the
-GPT-5.6 model identifiers and supports `reasoning_effort`. The lab still uses
-LlamaIndex for routing, decomposition, agents, retrieval, reranking, and
-evaluation; only the provider-specific Anthropic layer has been replaced.
+The OpenAI LLM integration uses LlamaIndex's `OpenAIResponses` wrapper so GPT-5.6
+can keep reasoning enabled while using function tools in the agentic step. The
+lab still uses LlamaIndex for routing, decomposition, agents, retrieval,
+reranking, and evaluation; only the provider-specific Anthropic layer has been
+replaced.
+
+All paths are derived from the location of `agentic_rag_lab.py`; there are no
+machine-specific `/home/...` or `/mnt/...` paths in the code. Python tracebacks
+may still display the physical absolute path of the checkout (for example when
+`~/datos` is a symlink or mounted directory), which does not make the code
+location-dependent.
